@@ -27,129 +27,11 @@ export const GENRE_COLOR_OPTIONS: Array<{
 ];
 
 /**
- * 初期マイジャンル一覧（アニメジャンル）
- * ユーザーは画面から自由にリネーム・削除・新規追加できます。
+ * 初期ジャンルは空（利用者が自分のライブラリに合わせて自由に作成）
  */
-export const DEFAULT_CUSTOM_GENRES: CustomGenreDef[] = [
-  { name: "バトル・アクション", color: "red" },
-  { name: "異世界・ファンタジー", color: "emerald" },
-  { name: "SF・ロボット", color: "cyan" },
-  { name: "日常・癒やし", color: "amber" },
-  { name: "恋愛・ラブコメ", color: "pink" },
-  { name: "学園・青春", color: "sky" },
-  { name: "コメディ・ギャグ", color: "orange" },
-  { name: "ミステリー・サスペンス", color: "indigo" },
-  { name: "ホラー・ダーク", color: "purple" },
-  { name: "スポーツ", color: "emerald" },
-  { name: "音楽・アイドル", color: "fuchsia" },
-  { name: "ドラマ・感動", color: "rose" },
-  { name: "歴史・時代劇", color: "amber" },
-  { name: "劇場版・映画", color: "rose" },
-  { name: "OVA・特別編", color: "indigo" },
-  { name: "お気に入り・神回", color: "pink" },
-];
+export const DEFAULT_CUSTOM_GENRES: CustomGenreDef[] = [];
 
-/**
- * アニメ向けプリセット分類ルール（自動ジャンル分類ON時 & プリセット選択用）
- */
-export const GENRE_RULES: GenreRule[] = [
-  {
-    name: "バトル・アクション",
-    group: "王道・アクション",
-    color: "bg-red-500/15 text-red-300 border-red-500/30",
-    keywords: ["バトル", "アクション", "戦闘", "格闘", "剣", "冒険", "action", "battle"],
-  },
-  {
-    name: "異世界・ファンタジー",
-    group: "王道・アクション",
-    color: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-    keywords: ["異世界", "転生", "ファンタジー", "魔法", "魔王", "勇者", "fantasy", "isekai"],
-  },
-  {
-    name: "SF・ロボット",
-    group: "王道・アクション",
-    color: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
-    keywords: ["sf", "ロボット", "メカ", "宇宙", "サイバー", "未来", "mecha", "sci-fi"],
-  },
-  {
-    name: "日常・癒やし",
-    group: "日常・青春",
-    color: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-    keywords: ["日常", "癒やし", "ほのぼの", "スローライフ", "キャンプ", "slice of life"],
-  },
-  {
-    name: "恋愛・ラブコメ",
-    group: "日常・青春",
-    color: "bg-pink-500/15 text-pink-300 border-pink-500/30",
-    keywords: ["恋愛", "ラブコメ", "恋", "青春", "romance", "romcom"],
-  },
-  {
-    name: "学園・青春",
-    group: "日常・青春",
-    color: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-    keywords: ["学園", "学校", "部活", "高校", "青春", "school"],
-  },
-  {
-    name: "コメディ・ギャグ",
-    group: "日常・青春",
-    color: "bg-orange-500/15 text-orange-300 border-orange-500/30",
-    keywords: ["コメディ", "ギャグ", "パロディ", "爆笑", "comedy"],
-  },
-  {
-    name: "ミステリー・サスペンス",
-    group: "シリアス・頭脳戦",
-    color: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
-    keywords: ["ミステリー", "推理", "探偵", "サスペンス", "心理戦", "謎", "mystery", "thriller"],
-  },
-  {
-    name: "ホラー・ダーク",
-    group: "シリアス・頭脳戦",
-    color: "bg-purple-500/15 text-purple-300 border-purple-500/30",
-    keywords: ["ホラー", "ダーク", "怪異", "妖怪", "オカルト", "horror", "dark"],
-  },
-  {
-    name: "ドラマ・感動",
-    group: "シリアス・頭脳戦",
-    color: "bg-rose-500/15 text-rose-300 border-rose-500/30",
-    keywords: ["ドラマ", "感動", "泣ける", "人間ドラマ", "drama"],
-  },
-  {
-    name: "スポーツ",
-    group: "テーマ別",
-    color: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-    keywords: ["スポーツ", "野球", "サッカー", "バスケ", "バレー", "テニス", "sports"],
-  },
-  {
-    name: "音楽・アイドル",
-    group: "テーマ別",
-    color: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
-    keywords: ["音楽", "バンド", "ライブ", "アイドル", "吹奏楽", "music", "idol"],
-  },
-  {
-    name: "歴史・時代劇",
-    group: "テーマ別",
-    color: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-    keywords: ["歴史", "戦国", "幕末", "時代劇", "侍", "和風", "historical"],
-  },
-  {
-    name: "劇場版・映画",
-    group: "フォーマット",
-    color: "bg-rose-500/15 text-rose-300 border-rose-500/30",
-    keywords: ["劇場版", "映画", "movie", "film"],
-  },
-  {
-    name: "OVA・特別編",
-    group: "フォーマット",
-    color: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
-    keywords: ["ova", "oad", "特別編", "総集編", "sp", "special"],
-  },
-  {
-    name: "お気に入り・神回",
-    group: "コレクション",
-    color: "bg-pink-500/15 text-pink-300 border-pink-500/30",
-    keywords: ["神回", "名シーン", "お気に入り", "op", "ed"],
-  },
-];
+export const GENRE_RULES: GenreRule[] = [];
 
 export const DEFAULT_GENRE_STYLE =
   "bg-zinc-800/90 text-zinc-200 border-zinc-700/80";
@@ -184,10 +66,7 @@ export function extractAutoGenres(video: VaultVideoItem): string[] {
   }
 
   if ((video.height ?? 0) >= 1080) {
-    matched.add("高画質 (Full HD+)");
-  }
-  if (video.duration >= 3600) {
-    matched.add("劇場版・映画");
+    matched.add("Full HD+");
   }
 
   return Array.from(matched);

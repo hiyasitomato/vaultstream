@@ -92,7 +92,7 @@ export default function TagEditorModal({
                 type="text"
                 value={newGenre}
                 onChange={(e) => setNewGenre(e.target.value)}
-                placeholder="新しいジャンル名を入力（例: バトル、日常、異世界、SF...）"
+                placeholder="新しいジャンル名を入力..."
                 className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
               />
               <button
@@ -127,26 +127,32 @@ export default function TagEditorModal({
             <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-300">
               ジャンル一覧（タップで ON / OFF）
             </h3>
-            <div className="flex flex-wrap gap-2">
-              {unifiedGenres.map((genre) => {
-                const selected = activeSet.has(genre);
-                return (
-                  <button
-                    key={genre}
-                    type="button"
-                    onClick={() => onToggleGenre(video.id, genre)}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                      selected
-                        ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
-                        : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                    }`}
-                  >
-                    {selected && <Check className="h-3.5 w-3.5" />}
-                    #{genre}
-                  </button>
-                );
-              })}
-            </div>
+            {unifiedGenres.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-zinc-800 px-4 py-4 text-center text-xs text-zinc-500">
+                まだジャンルがありません。上の入力欄から好きなジャンルを作成してください。
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {unifiedGenres.map((genre) => {
+                  const selected = activeSet.has(genre);
+                  return (
+                    <button
+                      key={genre}
+                      type="button"
+                      onClick={() => onToggleGenre(video.id, genre)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                        selected
+                          ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
+                          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                      }`}
+                    >
+                      {selected && <Check className="h-3.5 w-3.5" />}
+                      #{genre}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
 
