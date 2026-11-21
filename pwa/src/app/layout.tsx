@@ -1,18 +1,20 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 export const metadata: Metadata = {
   title: "VaultStream",
   description: "Private Google Drive HLS Video Streaming PWA",
-  manifest: "/manifest.webmanifest",
+  manifest: `${BASE_PATH}/manifest.webmanifest`,
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "VaultStream",
   },
   icons: {
-    icon: "/icon.svg",
-    apple: "/icon.svg",
+    icon: `${BASE_PATH}/icon.svg`,
+    apple: `${BASE_PATH}/icon.svg`,
   },
 };
 

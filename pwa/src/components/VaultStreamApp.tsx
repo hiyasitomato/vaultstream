@@ -36,6 +36,7 @@ import {
   Tag,
   Trash2,
   Unlock,
+  Upload,
   X,
 } from "lucide-react";
 import { unlockVaultWithPassphrase } from "@/lib/crypto";
@@ -93,12 +94,23 @@ import type {
   WatchFilter,
 } from "@/lib/types";
 import TagEditorModal from "./TagEditorModal";
+import UploadVideoModal from "./UploadVideoModal";
 import VideoCard from "./VideoCard";
 import VideoListRow from "./VideoListRow";
 import VideoPlayerModal from "./VideoPlayerModal";
 
 const ENV_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 const ENV_FOLDER_ID = process.env.NEXT_PUBLIC_VAULT_FOLDER_ID ?? "";
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+function extractFolderIdFromInput(raw: string): string {
+  const trimmed = raw.trim();
+  const folderMatch = trimmed.match(/\/folders\/([A-Za-z0-9_-]+)/);
+  if (folderMatch) return folderMatch[1];
+  const idMatch = trimmed.match(/[?&]id=([A-Za-z0-9_-]+)/);
+  if (idMatch) return idMatch[1];
+  return trimmed;
+}
 
 export default function VaultStreamApp() {
   const [clientId, setClientId] = useState(ENV_CLIENT_ID);
@@ -160,6 +172,7 @@ export default function VaultStreamApp() {
   const [startTimeNonce, setStartTimeNonce] = useState<number>(0);
   const [queueToast, setQueueToast] = useState<string | null>(null);
   const [editingTagsVideo, setEditingTagsVideo] = useState<VaultVideoItem | null>(null);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftClientId, setDraftClientId] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
@@ -526,7 +539,7 @@ export default function VaultStreamApp() {
     }
 
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      navigator.serviceWorker.register(`${BASE_PATH}/sw.js`).catch(() => undefined);
     }
   }, [loadLibrary]);
 
@@ -632,7 +645,7 @@ export default function VaultStreamApp() {
   const handleSaveSettings = (event: React.FormEvent) => {
     event.preventDefault();
     const nextClient = draftClientId.trim();
-    const nextFolder = draftFolderId.trim();
+    const nextFolder = extractFolderIdFromInput(draftFolderId);
     setSavedClientIdOverride(nextClient);
     setSavedFolderIdOverride(nextFolder);
     setClientId(nextClient || ENV_CLIENT_ID);
@@ -640,6 +653,22 @@ export default function VaultStreamApp() {
     setSettingsOpen(false);
     setError(null);
   };
+
+  const handleVideosUploaded = useCallback(
+    (newItems: VaultVideoItem[]) => {
+      if (newItems.length === 0) return;
+      setVideos((prev) => {
+        const next = [...newItems, ...prev];
+        saveCachedVideoList(folderId.trim(), next);
+        return next;
+      });
+      showQueueToast(`${newItems.length} 本の動画を暗号化アップロードしました！`);
+      if (accessToken && folderId.trim()) {
+        loadLibrary(accessToken, folderId, masterKey, true);
+      }
+    },
+    [accessToken, folderId, masterKey, loadLibrary, showQueueToast]
+  );
 
   const handleProgressUpdated = useCallback(
     (videoId: string, progress: PlaybackProgress) => {
@@ -1248,6 +1277,18 @@ export default function VaultStreamApp() {
                     ? "Drive同期済"
                     : "ローカル保存"}
               </span>
+            )}
+
+            {accessToken && (!vaultConfig || masterKey) && (
+              <button
+                type="button"
+                onClick={() => setUploadModalOpen(true)}
+                className="inline-flex h-9 items-center gap-1.5 rounded-full bg-rose-600 px-3 text-xs font-semibold text-white shadow-sm shadow-rose-600/30 transition hover:bg-rose-500"
+                title="スマホ・ブラウザから動画を暗号化アップロード"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">アップロード</span>
+              </button>
             )}
 
             {accessToken && (
@@ -2074,17 +2115,29 @@ export default function VaultStreamApp() {
                       条件に一致する動画がありません
                     </h3>
                     <p className="mt-2 text-xs text-zinc-400">
-                      検索キーワードやジャンルフィルタを変更するか、右上の「更新」を押してください。
+                      検索キーワードやジャンルフィルタを変更するか、右上の「アップロード」または「更新」を押してください。
                     </p>
-                    {(activeFilterCount > 0 || searchQuery) && (
-                      <button
-                        type="button"
-                        onClick={resetAllFilters}
-                        className="mt-4 rounded-xl bg-zinc-800 px-4 py-2 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
-                      >
-                        フィルタをリセット
-                      </button>
-                    )}
+                    <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                      {videos.length === 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setUploadModalOpen(true)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-500"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          この端末から最初の動画をアップロード
+                        </button>
+                      )}
+                      {(activeFilterCount > 0 || searchQuery) && (
+                        <button
+                          type="button"
+                          onClick={resetAllFilters}
+                          className="rounded-xl bg-zinc-800 px-4 py-2 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
+                        >
+                          フィルタをリセット
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : effectiveViewMode === "grid" ? (
                   <div className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -2318,6 +2371,23 @@ export default function VaultStreamApp() {
         />
       )}
 
+      {/* Mobile / Browser Direct E2EE Video Upload Modal */}
+      {uploadModalOpen && accessToken && (
+        <UploadVideoModal
+          rootFolderId={folderId.trim()}
+          accessToken={accessToken}
+          vaultConfig={vaultConfig}
+          masterKey={masterKey}
+          onVaultInitialized={(cfg, key) => {
+            setVaultConfig(cfg);
+            setMasterKey(key);
+          }}
+          onUploaded={handleVideosUploaded}
+          onAuthExpired={handleAuthExpired}
+          onClose={() => setUploadModalOpen(false)}
+        />
+      )}
+
       {/* Genre / Tag Editor Modal */}
       {editingTagsVideo && (
         <TagEditorModal
@@ -2369,7 +2439,7 @@ export default function VaultStreamApp() {
 
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
-                  Google Drive フォルダ ID
+                  Google Drive フォルダ ID（フォルダ URL をそのまま貼っても OK）
                 </label>
                 <input
                   type="text"

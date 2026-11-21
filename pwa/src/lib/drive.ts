@@ -348,7 +348,10 @@ export async function updateThumbnailInDrive(
 
 export async function driveFetchBlobUrl(
   fileId: string,
-  accessToken: string
+  accessToken: string,
+  encrypted = false,
+  masterKey: CryptoKey | null = null,
+  mimeType = "video/mp4"
 ): Promise<string> {
   const url = `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?alt=media`;
   const response = await fetch(url, {
@@ -364,8 +367,138 @@ export async function driveFetchBlobUrl(
   if (!response.ok) {
     throw new Error(`メディアの取得に失敗しました (${response.status})`);
   }
+
+  if (encrypted) {
+    if (!masterKey) {
+      throw new Error("暗号化動画の復号鍵がありません");
+    }
+    const encBytes = new Uint8Array(await response.arrayBuffer());
+    const plainBytes = await decryptAesGcmBytes(encBytes, masterKey);
+    const plainBuf = plainBytes.buffer.slice(
+      plainBytes.byteOffset,
+      plainBytes.byteOffset + plainBytes.byteLength
+    ) as ArrayBuffer;
+    return URL.createObjectURL(new Blob([plainBuf], { type: mimeType || "video/mp4" }));
+  }
+
   const blob = await response.blob();
   return URL.createObjectURL(blob);
+}
+
+export async function createDriveFolder(
+  name: string,
+  parentId: string,
+  accessToken: string
+): Promise<string> {
+  const response = await fetch(`${DRIVE_API_BASE}/files?fields=id`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: [parentId],
+    }),
+  });
+  if (response.status === 401) throw new Error("AUTH_EXPIRED");
+  if (!response.ok) {
+    throw new Error(`Drive フォルダ作成に失敗しました (${response.status})`);
+  }
+  const data = (await response.json()) as { id: string };
+  return data.id;
+}
+
+export async function saveVaultConfigToDrive(
+  rootFolderId: string,
+  config: VaultConfig,
+  accessToken: string
+): Promise<string> {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(config, null, 2));
+  return uploadOrUpdateBinaryFile(
+    rootFolderId,
+    "vault.json",
+    jsonBytes,
+    accessToken,
+    null
+  );
+}
+
+export async function uploadFileResumableToDrive(
+  parentId: string,
+  fileName: string,
+  payloadBytes: Uint8Array,
+  mimeType: string,
+  accessToken: string,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  // Initiate Google Drive resumable upload session
+  const initRes = await fetch(`${DRIVE_UPLOAD_BASE}/files?uploadType=resumable&fields=id`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Type": mimeType,
+      "X-Upload-Content-Length": String(payloadBytes.byteLength),
+    },
+    body: JSON.stringify({
+      name: fileName,
+      parents: [parentId],
+    }),
+  });
+
+  if (initRes.status === 401) throw new Error("AUTH_EXPIRED");
+  if (!initRes.ok) {
+    throw new Error(`アップロード初期化に失敗しました (${initRes.status})`);
+  }
+
+  const uploadUrl = initRes.headers.get("Location");
+  if (!uploadUrl) {
+    throw new Error("アップロード先 URL の取得に失敗しました");
+  }
+
+  const buffer = payloadBytes.buffer.slice(
+    payloadBytes.byteOffset,
+    payloadBytes.byteOffset + payloadBytes.byteLength
+  ) as ArrayBuffer;
+
+  return new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl, true);
+    xhr.setRequestHeader("Content-Type", mimeType);
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        reject(new Error("AUTH_EXPIRED"));
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const parsed = JSON.parse(xhr.responseText) as { id?: string };
+          if (parsed.id) {
+            onProgress?.(100);
+            resolve(parsed.id);
+            return;
+          }
+        } catch {
+          // Fallthrough
+        }
+        reject(new Error("アップロード結果の解析に失敗しました"));
+      } else {
+        reject(new Error(`アップロードに失敗しました (${xhr.status})`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("ネットワークエラーによりアップロードが中断されました"));
+    xhr.send(new Blob([buffer], { type: mimeType }));
+  });
 }
 
 async function listFolderChildren(
@@ -608,7 +741,7 @@ export async function fetchVaultVideosFast(
     );
     if (indexedItems) {
       for (const item of indexedItems) {
-        if (item.folderId && item.kind === "hls") {
+        if (item.folderId && (item.kind === "hls" || item.manifest?.directFileId)) {
           indexedByFolderId.set(item.folderId, item);
         }
       }
@@ -645,19 +778,23 @@ export async function fetchVaultVideosFast(
             return null;
           }
 
-          if (!manifest?.playlistFileId) {
+          if (!manifest?.playlistFileId && !manifest?.directFileId) {
             return null;
           }
 
+          const isDirectPackaged = !manifest.playlistFileId && Boolean(manifest.directFileId);
+
           const segments: Record<string, string> = { ...(manifest.segments ?? {}) };
-          for (const f of files) {
-            if (
-              (f.name.endsWith(".ts") ||
-                f.name.endsWith(".m4s") ||
-                /^\d{4}\.enc$/.test(f.name)) &&
-              !segments[f.name]
-            ) {
-              segments[f.name] = f.id;
+          if (!isDirectPackaged) {
+            for (const f of files) {
+              if (
+                (f.name.endsWith(".ts") ||
+                  f.name.endsWith(".m4s") ||
+                  /^\d{4}\.enc$/.test(f.name)) &&
+                !segments[f.name]
+              ) {
+                segments[f.name] = f.id;
+              }
             }
           }
 
@@ -670,6 +807,7 @@ export async function fetchVaultVideosFast(
           const spriteEntry = files.find((f) =>
             isEncrypted ? f.name === "s.enc" : f.name === "sprite.jpg"
           );
+          const spriteFileId = manifest.spriteFileId || spriteEntry?.id;
 
           return {
             id: manifest.id || folder.id,
@@ -680,17 +818,20 @@ export async function fetchVaultVideosFast(
             width: manifest.width,
             height: manifest.height,
             sizeBytes: manifest.sizeBytes,
-            kind: "hls",
+            kind: isDirectPackaged ? "direct" : "hls",
+            directFileId: isDirectPackaged ? manifest.directFileId : undefined,
+            mimeType: manifest.mimeType || (isDirectPackaged ? "video/mp4" : undefined),
             encrypted: isEncrypted,
             manifest: {
               ...manifest,
               encrypted: isEncrypted,
               segments,
               thumbnailFileId: thumbFileId,
+              spriteFileId,
             },
             thumbnailFileId: thumbFileId,
             thumbnailModifiedTime: thumbEntry?.modifiedTime,
-            spriteFileId: spriteEntry?.id,
+            spriteFileId,
             sourceFileName: manifest.sourceFileName || folder.name,
           };
         } catch (error) {
@@ -785,14 +926,15 @@ export function prefetchHlsPlaylist(
   masterKey: CryptoKey | null = null
 ): void {
   const key = manifest.playlistFileId;
+  if (!key) return;
   if (playlistTextCache.has(key)) return;
   const promise = (async () => {
     if (manifest.encrypted) {
       if (!masterKey) throw new Error("NO_KEY");
-      const encBytes = await driveFetchBytes(manifest.playlistFileId, accessToken);
+      const encBytes = await driveFetchBytes(key, accessToken);
       return decryptAesGcmText(encBytes, masterKey);
     }
-    return driveFetchText(manifest.playlistFileId, accessToken);
+    return driveFetchText(key, accessToken);
   })().catch((err) => {
     playlistTextCache.delete(key);
     throw err;
@@ -911,6 +1053,11 @@ export async function buildRewrittenHlsPlaylist(
   accessToken: string,
   masterKey: CryptoKey | null = null
 ): Promise<BuiltHlsSource> {
+  if (!manifest.playlistFileId) {
+    throw new Error("HLS プレイリストが見つかりません");
+  }
+  const mainPlaylistFileId = manifest.playlistFileId;
+  const mainSegments = manifest.segments ?? {};
   const objectUrlsToRevoke: string[] = [];
   const encrypted = Boolean(manifest.encrypted);
 
@@ -938,9 +1085,9 @@ export async function buildRewrittenHlsPlaylist(
         width: origWidth,
         height: origHeight,
         bandwidth: origBandwidth,
-        playlistFileId: manifest.playlistFileId,
+        playlistFileId: mainPlaylistFileId,
         hlsKeyBase64: manifest.hlsKeyBase64,
-        segments: manifest.segments,
+        segments: mainSegments,
       },
     ].sort((a, b) => a.bandwidth - b.bandwidth);
 
@@ -985,14 +1132,14 @@ export async function buildRewrittenHlsPlaylist(
 
   // Single-rendition mode
   const playlistText = await fetchDecryptedPlaylistText(
-    manifest.playlistFileId,
+    mainPlaylistFileId,
     encrypted,
     accessToken,
     masterKey
   );
   const { mediaPlaylistUrl, timeline } = rewriteSingleMediaPlaylist(
     playlistText,
-    manifest.segments,
+    mainSegments,
     manifest.hlsKeyBase64,
     objectUrlsToRevoke
   );

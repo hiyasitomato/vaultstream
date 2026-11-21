@@ -11,6 +11,34 @@ export function base64ToUint8Array(b64: string): Uint8Array {
   return bytes;
 }
 
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return window.btoa(binary);
+}
+
+export async function createVaultConfig(
+  passphrase: string
+): Promise<{ config: VaultConfig; masterKey: CryptoKey }> {
+  const saltBytes = window.crypto.getRandomValues(new Uint8Array(16));
+  const saltBase64 = uint8ArrayToBase64(saltBytes);
+  const iterations = 100000;
+  const masterKey = await deriveMasterKey(passphrase, saltBase64, iterations);
+  const checkBytes = await encryptAesGcmText(CHECK_PLAINTEXT, masterKey);
+  const config: VaultConfig = {
+    version: 2,
+    kdf: "PBKDF2-SHA256",
+    iterations,
+    salt: saltBase64,
+    check: uint8ArrayToBase64(checkBytes),
+  };
+  return { config, masterKey };
+}
+
 export async function deriveMasterKey(
   passphrase: string,
   saltBase64: string,

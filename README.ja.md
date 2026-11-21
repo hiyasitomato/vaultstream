@@ -1,6 +1,6 @@
 # VaultStream（日本語ガイド）
 
-**[English README](README.md) | 日本語**
+**[English README](README.md) | 日本語** | **[📱 スマホ・ブラウザ版を開く（PC不要）](https://hiyasitomato.github.io/vaultstream/)** | **[🪟 Windowsアプリ (.exe) ダウンロード](https://github.com/hiyasitomato/vaultstream/releases)**
 
 **Google AI Pro（5TB）や Google One で余っている Google Drive 容量を、「サーバー代 0 円・完全暗号化（E2EE）・YouTube 並みの爆速プライベート動画アプリ」に変える OSS プロジェクトです。**
 
@@ -41,7 +41,19 @@ Cloudflare Pages の無料枠に静的フロントエンド（PWA）を置くだ
 
 ---
 
-## セットアップ手順（約 15 分）
+## セットアップ手順
+
+### 📱 一番かんたん：スマホ・ブラウザだけで完結（PC 不要・コマンド不要！）
+1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクト作成 → **Google Drive API** を有効化 → OAuth 同意画面（テスト）に自分の Gmail を追加 → **ウェブアプリケーション**の OAuth クライアント ID を作成し、**「承認済みの JavaScript 生成元」**に **`https://hiyasitomato.github.io`** を登録します。
+2. スマホや iPad で **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** を開きます（Safari の「共有 → ホーム画面に追加」でアプリ化できます）。
+3. 右上の **⚙ 設定ボタン** から、自分の **Web 用クライアント ID** と **Google Drive フォルダ URL** を入力して Google ログイン！
+4. 右上の **「アップロード」ボタン** から、iPhone の写真ライブラリや Android のギャラリーの動画をそのまま端末内で完全暗号化（AES-256-GCM＋サムネ＋6×6 プレビュー自動生成）して Google Drive へ直接アップロード＆再生できます！
+   - ※公開版サイトはあなたの設定をブラウザ内だけに保存し、動画は「あなたの Google Drive ⇄ あなたのスマホ」だけで直接通信します。
+   - ※長尺・大容量動画（数 GB や一括 70GB など）を 360p 高速 ABR 付きで上げる場合は、下の Windows `.exe` アプリがおすすめです。
+
+---
+
+### 💻 PC での一括アップロード（360p ABR 対応）＆自前デプロイ手順
 
 ### 前提ツール
 ※FFmpeg 本体は本リポジトリに同梱していません。

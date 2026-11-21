@@ -27,9 +27,12 @@ export interface VaultManifest {
   height?: number;
   sizeBytes?: number;
   thumbnailFileId?: string;
-  playlistFileId: string;
+  spriteFileId?: string;
+  playlistFileId?: string;
+  directFileId?: string;
+  mimeType?: string;
   hlsKeyBase64?: string;
-  segments: Record<string, string>;
+  segments?: Record<string, string>;
   variants?: VaultQualityVariant[];
   sourceFileName?: string;
   genres?: string[];

@@ -7,9 +7,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
 [![Cloudflare Pages](https://img.shields.io/badge/Hosting-Cloudflare%20Pages%20%240%2Fmo-F38020.svg)](https://pages.cloudflare.com/)
-[![E2EE](https://img.shields.io/badge/Security-AES--256--GCM%20%2B%20AES--128%20HLS-blue.svg)](#security--e2ee-architecture)
+[![E2EE](https://img.shields.io/badge/Security-AES--256--GCM%20%2B%20AES--128%20HLS-blue.svg)](#key-features)
+[![Web App](https://img.shields.io/badge/Try%20on%20Phone%20%2F%20Browser-Open%20PWA-e11d48.svg)](https://hiyasitomato.github.io/vaultstream/)
 
-**[English](README.md) | [日本語 (Japanese)](README.ja.md)**
+**[English](README.md) | [日本語 (Japanese)](README.ja.md)** | **[📱 Open Hosted PWA (No PC Needed)](https://hiyasitomato.github.io/vaultstream/)** | **[🪟 Download Windows App (.exe)](https://github.com/hiyasitomato/vaultstream/releases)**
 
 </div>
 
@@ -47,7 +48,8 @@ Yet existing ways to watch your personal video library from Google Drive all fal
 - **Metadata, Thumbnails, Sprites, Playlists, Genres & Watch History**: AES-256-GCM derived from your master passphrase via PBKDF2-SHA256 (100,000 iterations).
 - **Anonymized Storage**: Random 16-char hex folder names and `application/octet-stream` MIME types on Google Drive.
 
-### Modern Viewing & Library Management (PC / iPad / Mobile PWA)
+### Modern Viewing, Mobile Upload & Library Management (PC / iPad / Phone PWA)
+- **Built-in Smartphone / Browser E2EE Uploader (Zero PC Needed)**: Select videos directly from iPhone Photos or Android Gallery — VaultStream automatically generates the encrypted thumbnail, 6×6 hover sprite, and AES-256-GCM encrypted video right inside your browser and uploads straight to your Google Drive.
 - Unified YouTube-style custom player (auto-hide HUD, PiP, "Back to Home" mini-player that keeps playing, ±10s skip, speed control, keyboard shortcuts).
 - **1-Click Thumbnail Capture & Timestamp Jump**: Capture any frame as the video's encrypted thumbnail; click the `📷 mm:ss` badge on any card or the seek bar marker to jump directly to that scene.
 - Playback queue (reorder, shuffle, auto-play next, MediaSession controls).
@@ -72,7 +74,16 @@ Yet existing ways to watch your personal video library from Google Drive all fal
 
 ---
 
-## Quick Start (15 Minutes)
+## Quick Start
+
+### 📱 Fastest Path: Smartphone / Browser Only (Zero PC, Zero Coding!)
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a free project, enable **Google Drive API**, add your Gmail as a **Test user**, and create a **Web application** OAuth Client ID with **`https://hiyasitomato.github.io`** under **Authorized JavaScript origins**.
+2. Open **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** on your iPhone / Android / iPad / PC (and add to Home Screen as a PWA).
+3. Tap the **⚙ Settings** button, paste your **Web Client ID** and your private **Google Drive Folder URL**, sign in with Google, and tap **Upload** to encrypt & upload videos straight from your camera roll! *(Your data talks directly between your browser and your own Google Drive — nothing ever touches any third-party server.)*
+
+---
+
+### 💻 Self-Hosted & Bulk / Large Video Setup (PC + 360p Fast-Start ABR)
 
 ### Prerequisites
 - **FFmpeg & FFprobe** (not bundled in this repo):

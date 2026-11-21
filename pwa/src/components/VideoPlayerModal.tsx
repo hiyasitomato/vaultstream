@@ -424,7 +424,13 @@ export default function VideoPlayerModal({
             setLoading(false);
           }
         } else if (video.directFileId && videoEl) {
-          const blobUrl = await driveFetchBlobUrl(video.directFileId, accessToken);
+          const blobUrl = await driveFetchBlobUrl(
+            video.directFileId,
+            accessToken,
+            Boolean(video.encrypted),
+            masterKey,
+            video.mimeType || "video/mp4"
+          );
           if (!active) {
             URL.revokeObjectURL(blobUrl);
             return;
