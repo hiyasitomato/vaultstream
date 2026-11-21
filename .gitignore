@@ -1,0 +1,22 @@
+# Dependencies & build outputs
+node_modules/
+pwa/.next/
+pwa/out/
+pwa/.wrangler/
+.wrangler/
+*.tsbuildinfo
+
+# Secrets & local configs (NEVER commit these!)
+.env
+.env.local
+pwa/.env.local
+packer/credentials.json
+packer/token.json
+packer/.upload_state*.json
+packer/__pycache__/
+packer/.venv/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.log

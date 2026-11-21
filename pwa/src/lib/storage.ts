@@ -1,0 +1,262 @@
+import type {
+  CustomGenreDef,
+  PlaybackProgress,
+  SyncedVaultUserData,
+  VideoUserMeta,
+} from "./types";
+
+const PROGRESS_KEY = "vaultstream:progress:v1";
+const USER_DATA_KEY = "vaultstream:user_data:v2";
+const LEGACY_USER_META_KEY = "vaultstream:user_meta:v1";
+const LEGACY_CUSTOM_GENRES_KEY = "vaultstream:custom_genres:v1";
+const AUTH_SESSION_KEY = "vaultstream:auth_session:v2";
+const SAVED_PASSPHRASE_KEY = "vaultstream:passphrase:v1";
+const VIDEO_LIST_CACHE_PREFIX = "vaultstream:video_list_cache:v1:";
+const CLIENT_ID_OVERRIDE_KEY = "vaultstream:client_id_override";
+const FOLDER_ID_OVERRIDE_KEY = "vaultstream:folder_id_override";
+
+export function loadCachedVideoList(folderId: string): unknown[] | null {
+  if (typeof window === "undefined" || !folderId) return null;
+  try {
+    const raw = window.localStorage.getItem(`${VIDEO_LIST_CACHE_PREFIX}${folderId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedVideoList(folderId: string, items: unknown[]): void {
+  if (typeof window === "undefined" || !folderId) return;
+  try {
+    window.localStorage.setItem(
+      `${VIDEO_LIST_CACHE_PREFIX}${folderId}`,
+      JSON.stringify(items)
+    );
+  } catch {
+    // Ignore storage quota
+  }
+}
+
+export function clearCachedVideoList(folderId: string): void {
+  if (typeof window === "undefined" || !folderId) return;
+  window.localStorage.removeItem(`${VIDEO_LIST_CACHE_PREFIX}${folderId}`);
+}
+
+export interface SavedAuthSession {
+  accessToken: string;
+  expiresAt: number;
+}
+
+export function loadSavedPassphrase(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(SAVED_PASSPHRASE_KEY) ?? "";
+}
+
+export function savePassphrase(passphrase: string): void {
+  if (typeof window === "undefined") return;
+  if (!passphrase) {
+    window.localStorage.removeItem(SAVED_PASSPHRASE_KEY);
+  } else {
+    window.localStorage.setItem(SAVED_PASSPHRASE_KEY, passphrase);
+  }
+}
+
+export function clearSavedPassphrase(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SAVED_PASSPHRASE_KEY);
+}
+
+export function loadAuthSession(): SavedAuthSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SavedAuthSession;
+    if (
+      parsed.accessToken &&
+      typeof parsed.expiresAt === "number" &&
+      parsed.expiresAt > Date.now() + 60_000
+    ) {
+      return parsed;
+    }
+    window.localStorage.removeItem(AUTH_SESSION_KEY);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAuthSession(accessToken: string, expiresAt: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      AUTH_SESSION_KEY,
+      JSON.stringify({ accessToken, expiresAt })
+    );
+  } catch {
+    // Ignore
+  }
+}
+
+export function clearAuthSession(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(AUTH_SESSION_KEY);
+}
+
+export function loadAllProgress(): Record<string, PlaybackProgress> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PROGRESS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, PlaybackProgress>;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAllProgress(all: Record<string, PlaybackProgress>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(all));
+  } catch {
+    // Ignore
+  }
+}
+
+export function mergeProgressMaps(
+  localMap: Record<string, PlaybackProgress>,
+  remoteMap: Record<string, PlaybackProgress> | undefined
+): Record<string, PlaybackProgress> {
+  if (!remoteMap) return { ...localMap };
+  const merged: Record<string, PlaybackProgress> = { ...localMap };
+  for (const [vid, remote] of Object.entries(remoteMap)) {
+    const local = merged[vid];
+    if (!local || (remote.updatedAt ?? 0) > (local.updatedAt ?? 0)) {
+      merged[vid] = {
+        ...remote,
+        playCount: Math.max(local?.playCount ?? 0, remote.playCount ?? 0),
+      };
+    } else {
+      merged[vid] = {
+        ...local,
+        playCount: Math.max(local.playCount ?? 0, remote.playCount ?? 0),
+      };
+    }
+  }
+  return merged;
+}
+
+export function saveVideoProgress(
+  videoId: string,
+  currentTime: number,
+  duration: number,
+  incrementPlayCount = false
+): PlaybackProgress {
+  const all = loadAllProgress();
+  const prev = all[videoId];
+  const next: PlaybackProgress = {
+    currentTime: Number.isFinite(currentTime) ? currentTime : prev?.currentTime ?? 0,
+    duration: Number.isFinite(duration) && duration > 0 ? duration : prev?.duration ?? 0,
+    updatedAt: Date.now(),
+    playCount: (prev?.playCount ?? 0) + (incrementPlayCount ? 1 : 0),
+  };
+  if (typeof window !== "undefined") {
+    try {
+      all[videoId] = next;
+      window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(all));
+    } catch {
+      // Ignore
+    }
+  }
+  return next;
+}
+
+export function createDefaultUserData(): SyncedVaultUserData {
+  return {
+    version: 1,
+    updatedAt: 0,
+    useAutoGenres: false,
+    customGenres: [],
+    videoMeta: {},
+  };
+}
+
+export function loadLocalUserData(): SyncedVaultUserData {
+  if (typeof window === "undefined") return createDefaultUserData();
+  try {
+    const raw = window.localStorage.getItem(USER_DATA_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SyncedVaultUserData>;
+      return {
+        version: 1,
+        updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+        useAutoGenres: Boolean(parsed.useAutoGenres),
+        customGenres: Array.isArray(parsed.customGenres) ? parsed.customGenres : [],
+        videoMeta: parsed.videoMeta && typeof parsed.videoMeta === "object" ? parsed.videoMeta : {},
+      };
+    }
+
+    // Migrate legacy v1 data if present
+    const legacyMetaRaw = window.localStorage.getItem(LEGACY_USER_META_KEY);
+    const legacyGenresRaw = window.localStorage.getItem(LEGACY_CUSTOM_GENRES_KEY);
+    const videoMeta: Record<string, VideoUserMeta> = legacyMetaRaw
+      ? (JSON.parse(legacyMetaRaw) as Record<string, VideoUserMeta>)
+      : {};
+    const customGenres: CustomGenreDef[] = legacyGenresRaw
+      ? (JSON.parse(legacyGenresRaw) as string[])
+          .filter((x) => typeof x === "string")
+          .map((name) => ({ name, color: "rose" }))
+      : [];
+
+    return {
+      version: 1,
+      updatedAt: legacyMetaRaw || legacyGenresRaw ? Date.now() : 0,
+      useAutoGenres: false,
+      customGenres,
+      videoMeta,
+    };
+  } catch {
+    return createDefaultUserData();
+  }
+}
+
+export function saveLocalUserData(data: SyncedVaultUserData): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(USER_DATA_KEY, JSON.stringify(data));
+  } catch {
+    // Ignore
+  }
+}
+
+export function getSavedClientIdOverride(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(CLIENT_ID_OVERRIDE_KEY) ?? "";
+}
+
+export function setSavedClientIdOverride(value: string): void {
+  if (typeof window === "undefined") return;
+  const trimmed = value.trim();
+  if (!trimmed) {
+    window.localStorage.removeItem(CLIENT_ID_OVERRIDE_KEY);
+  } else {
+    window.localStorage.setItem(CLIENT_ID_OVERRIDE_KEY, trimmed);
+  }
+}
+
+export function getSavedFolderIdOverride(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(FOLDER_ID_OVERRIDE_KEY) ?? "";
+}
+
+export function setSavedFolderIdOverride(value: string): void {
+  if (typeof window === "undefined") return;
+  const trimmed = value.trim();
+  if (!trimmed) {
+    window.localStorage.removeItem(FOLDER_ID_OVERRIDE_KEY);
+  } else {
+    window.localStorage.setItem(FOLDER_ID_OVERRIDE_KEY, trimmed);
+  }
+}
