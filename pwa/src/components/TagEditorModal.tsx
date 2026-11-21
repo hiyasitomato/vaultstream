@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, Plus, Tag, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Check, Plus, Tag, X } from "lucide-react";
 import { GENRE_COLOR_OPTIONS, GENRE_RULES, getGenreStyle } from "@/lib/genres";
 import type { CustomGenreDef, VaultVideoItem } from "@/lib/types";
 
@@ -24,14 +24,32 @@ export default function TagEditorModal({
 }: TagEditorModalProps) {
   const [newGenre, setNewGenre] = useState("");
   const [selectedColor, setSelectedColor] = useState("rose");
-  const [showPresets, setShowPresets] = useState(false);
   const activeSet = new Set(currentGenres);
 
-  const groupedPresets = GENRE_RULES.reduce<Record<string, string[]>>((acc, rule) => {
-    if (!acc[rule.group]) acc[rule.group] = [];
-    acc[rule.group].push(rule.name);
-    return acc;
-  }, {});
+  // Merge user custom genres, preset genres, and any active genres into a single flat list
+  const unifiedGenres = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const g of customGenres) {
+      if (g.name && !seen.has(g.name)) {
+        seen.add(g.name);
+        list.push(g.name);
+      }
+    }
+    for (const rule of GENRE_RULES) {
+      if (rule.name && !seen.has(rule.name)) {
+        seen.add(rule.name);
+        list.push(rule.name);
+      }
+    }
+    for (const g of currentGenres) {
+      if (g && !seen.has(g)) {
+        seen.add(g);
+        list.push(g);
+      }
+    }
+    return list;
+  }, [customGenres, currentGenres]);
 
   const handleSubmitNew = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,7 +85,7 @@ export default function TagEditorModal({
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
-          {/* Create new custom genre */}
+          {/* Create new genre */}
           <form onSubmit={handleSubmitNew} className="space-y-2.5 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3.5">
             <div className="flex gap-2">
               <input
@@ -104,85 +122,31 @@ export default function TagEditorModal({
             </div>
           </form>
 
-          {/* User's own custom genres */}
+          {/* Unified genre list (always open, 1-tap toggle) */}
           <div>
             <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-300">
-              マイジャンル（タップで ON / OFF）
+              ジャンル一覧（タップで ON / OFF）
             </h3>
-            {customGenres.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-zinc-800 px-4 py-4 text-center text-xs text-zinc-500">
-                まだマイジャンルがありません。上の入力欄から好きなジャンルを作成してください。
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {customGenres.map((genre) => {
-                  const selected = activeSet.has(genre.name);
-                  return (
-                    <button
-                      key={genre.name}
-                      type="button"
-                      onClick={() => onToggleGenre(video.id, genre.name)}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                        selected
-                          ? `${getGenreStyle(genre.name, customGenres)} ring-1 ring-white/30`
-                          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                      }`}
-                    >
-                      {selected && <Check className="h-3.5 w-3.5" />}
-                      #{genre.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Optional collapsible preset genres */}
-          <div className="border-t border-zinc-800/80 pt-3">
-            <button
-              type="button"
-              onClick={() => setShowPresets((prev) => !prev)}
-              className="flex w-full items-center justify-between py-1 text-xs font-semibold text-zinc-400 hover:text-zinc-200"
-            >
-              <span>プリセットジャンルから選ぶ（任意）</span>
-              {showPresets ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-            </button>
-
-            {showPresets && (
-              <div className="mt-3 space-y-4">
-                {Object.entries(groupedPresets).map(([groupName, names]) => (
-                  <div key={groupName}>
-                    <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                      {groupName}
-                    </h4>
-                    <div className="flex flex-wrap gap-1.5">
-                      {names.map((genre) => {
-                        const selected = activeSet.has(genre);
-                        return (
-                          <button
-                            key={genre}
-                            type="button"
-                            onClick={() => onToggleGenre(video.id, genre)}
-                            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
-                              selected
-                                ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/25`
-                                : "border-zinc-800 bg-zinc-900/70 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                            }`}
-                          >
-                            {selected && <Check className="h-3 w-3" />}
-                            #{genre}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {unifiedGenres.map((genre) => {
+                const selected = activeSet.has(genre);
+                return (
+                  <button
+                    key={genre}
+                    type="button"
+                    onClick={() => onToggleGenre(video.id, genre)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                      selected
+                        ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
+                        : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                    }`}
+                  >
+                    {selected && <Check className="h-3.5 w-3.5" />}
+                    #{genre}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
