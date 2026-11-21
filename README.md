@@ -75,24 +75,39 @@ Yet existing ways to watch your personal video library from Google Drive all fal
 ## Quick Start (15 Minutes)
 
 ### Prerequisites
-Install these free tools locally (FFmpeg binary is not bundled in this repository):
-- **Node.js 20+**
-- **Python 3.10+**
-- **FFmpeg & FFprobe**:
-  - Windows: `winget install Gyan.FFmpeg`
+- **FFmpeg & FFprobe** (not bundled in this repo):
+  - Windows: `winget install Gyan.FFmpeg` *(or click the built-in **"Install FFmpeg"** button inside `VaultStream-Packer.exe`)*
   - macOS: `brew install ffmpeg`
   - Linux: `sudo apt install ffmpeg`
+- **Node.js 20+** (for deploying the PWA to Cloudflare Pages)
+- **Python 3.10+** *(only needed if you use the CLI instead of `VaultStream-Packer.exe`)*
 
-### 1. Create a Private Google Drive Folder & OAuth Credentials
-1. Create a private folder in Google Drive (e.g. `VaultStream`) and copy its **Folder ID** from the URL (`https://drive.google.com/drive/folders/<FOLDER_ID>`).
+### 0. Get VaultStream
+- **Windows GUI App (Easiest — no Python required)**: Download `VaultStream-Packer.exe` from the **[Releases page](https://github.com/hiyasitomato/vaultstream/releases)**.
+- **Full Source Code (for PWA deploy & CLI)**:
+  ```bash
+  git clone https://github.com/hiyasitomato/vaultstream.git
+  cd vaultstream
+  ```
+  *(Or click the green **Code → Download ZIP** button on GitHub.)*
+
+### 1. Create a Private Google Drive Folder & OAuth Credentials (Free)
+1. Create a private folder in Google Drive (e.g. `VaultStream`) and copy its URL or **Folder ID** (`https://drive.google.com/drive/folders/<FOLDER_ID>`).
 2. In [Google Cloud Console](https://console.cloud.google.com/):
-   - Create a project and enable **Google Drive API**.
-   - Configure the **OAuth consent screen** as **External / Testing** and add your own Gmail under **Test users**.
-   - Create **two** OAuth 2.0 Client IDs under **Credentials**:
+   - Create a new project and enable **Google Drive API** under *APIs & Services → Library*.
+   - Under *Google Auth Platform / OAuth consent screen*, set User Type to **External**, leave status as **Testing** (no Google verification needed for personal use), and add your own Gmail under **Test users**.
+   - Under *Clients / Credentials → Create Credentials → OAuth client ID*, create **two** clients:
      1. **Web application** (for the PWA): Add `http://localhost:3000` (and later your `https://<project>.pages.dev` URL) under **Authorized JavaScript origins**. Copy the Client ID.
-     2. **Desktop app** (for the Python packer): Download the JSON file and save it as `packer/credentials.json`.
+     2. **Desktop app** (for the Packer): Download the JSON file and rename it to `credentials.json` (place it next to `VaultStream-Packer.exe` or inside `packer/`).
 
 ### 2. Encrypt & Upload Your Videos
+
+#### Option A: Windows Desktop GUI App (`VaultStream-Packer.exe`) — Recommended
+1. Double-click `VaultStream-Packer.exe` *(if Windows SmartScreen pops up for an unsigned app, click **More info → Run anyway**)*.
+2. Select your video file or folder, paste your Google Drive folder URL (ID is extracted automatically), select `credentials.json`, enter your master passphrase, and click **Start**.
+3. If FFmpeg isn't installed yet, click the **Install FFmpeg** button in the top-right corner of the app.
+
+#### Option B: Command Line (Windows / macOS / Linux)
 ```bash
 cd packer
 pip install -r requirements.txt
@@ -102,9 +117,9 @@ python pack_video.py "/path/to/your/videos" \
   --folder-id "YOUR_GOOGLE_DRIVE_FOLDER_ID" \
   --prompt-password
 ```
-- Safe by default: **never deletes your original local videos** unless `--delete-source` is explicitly passed.
+- Safe by default: **never deletes your original local videos** unless `--delete-source` is explicitly enabled.
 - Resumable: progress is tracked in `.upload_state_e2ee.json` so interrupted batches continue right where they left off.
-- Use `--no-360p` if you want to skip 360p fast-start generation, or `--workers 2` if you hit temporary Drive API rate limits.
+- Build the `.exe` yourself anytime on Windows via `packer\build_exe.ps1`.
 
 ### 3. Build & Deploy the PWA for Free on Cloudflare Pages
 ```bash

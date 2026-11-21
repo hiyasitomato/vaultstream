@@ -43,24 +43,40 @@ Cloudflare Pages の無料枠に静的フロントエンド（PWA）を置くだ
 
 ## セットアップ手順（約 15 分）
 
-### 前提ツール（各自インストール）
-※FFmpeg 本体は本リポジトリに同梱していません。各自インストールしてください。
-- **Node.js 20+**
-- **Python 3.10+**
+### 前提ツール
+※FFmpeg 本体は本リポジトリに同梱していません。
 - **FFmpeg / FFprobe**
-  - Windows: `winget install Gyan.FFmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux: `sudo apt install ffmpeg`
+  - Windows：`winget install Gyan.FFmpeg`（※**`VaultStream-Packer.exe` 内の「FFmpeg を自動インストール」ボタン**からも 1 クリック導入可能）
+  - macOS：`brew install ffmpeg`
+  - Linux：`sudo apt install ffmpeg`
+- **Node.js 20+**（PWA を Cloudflare Pages へデプロイする際に使用）
+- **Python 3.10+**（※Windows で `VaultStream-Packer.exe` を使う場合は不要！）
 
-### 1. Google Drive フォルダと OAuth クライアントの準備
-1. Google Drive に非公開フォルダ（例：`VaultStream`）を作成し、URL 末尾の **フォルダ ID** を控える。
-2. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作成し、**Google Drive API** を有効化。
-3. **OAuth 同意画面** を「外部 / テスト」で設定し、**テストユーザーに自分の Gmail アドレスを追加**。
-4. **認証情報** から OAuth クライアント ID を 2 つ作成：
+### 0. VaultStream をダウンロード
+- **Windows 用 GUI アプリ（Python 不要・おすすめ）**：**[Releases ページ](https://github.com/hiyasitomato/vaultstream/releases)** から **`VaultStream-Packer.exe`** をダウンロード。
+- **ソースコード一式（PWA デプロイ・CLI 用）**：
+  ```bash
+  git clone https://github.com/hiyasitomato/vaultstream.git
+  cd vaultstream
+  ```
+  （※Git を使っていない場合は、GitHub 右上の緑ボタン **Code → Download ZIP** からダウンロードして解凍してください。）
+
+### 1. Google Drive フォルダと OAuth クライアントの準備（無料）
+1. Google Drive に非公開フォルダ（例：`VaultStream`）を作成し、ブラウザの URL（または末尾の **フォルダ ID**）をコピー。
+2. [Google Cloud Console](https://console.cloud.google.com/) で新しいプロジェクトを作成し、「**API とサービス → ライブラリ**」から **Google Drive API** を有効化。
+3. 「**Google Auth Platform（OAuth 同意画面）**」を「外部 / テスト」で設定し、**テストユーザーに自分の Gmail アドレスを追加**（※自分専用テストモードのため審査不要・無料）。
+4. 「**クライアント（認証情報）→ クライアントを作成**」から OAuth クライアント ID を **2 つ** 作成：
    - **ウェブアプリケーション**（PWA 用）：「**承認済みの JavaScript 生成元**」に `http://localhost:3000`（デプロイ後に本番 URL も追加）を登録し、クライアント ID を控える。
-   - **デスクトップアプリ**（パッカー用）：JSON をダウンロードして `packer/credentials.json` に配置。
+   - **デスクトップアプリ**（パッカー用）：JSON をダウンロードしてファイル名を `credentials.json` に変更し、`VaultStream-Packer.exe` と同じフォルダ（または `packer/` 内）に配置。
 
 ### 2. 動画を暗号化してアップロード
+
+#### 方法 A：Windows デスクトップアプリ（`VaultStream-Packer.exe`・Python 不要）
+1. `VaultStream-Packer.exe` をダブルクリックして起動します（※個人開発の未署名アプリのため初回のみ Windows の青い警告が出ます。「**詳細情報 → 実行**」で起動できます）。
+2. FFmpeg が未導入の場合は、画面右上の「**FFmpeg を自動インストール**」ボタンを押します。
+3. 動画フォルダを選択し、Google Drive のフォルダ URL（ID は自動抽出されます）と好きなマスターパスワードを入力して「**暗号化 ＆ Google Drive アップロード開始**」を押せば完了！
+
+#### 方法 B：コマンドライン（Windows / macOS / Linux）
 ```bash
 cd packer
 pip install -r requirements.txt
@@ -71,8 +87,8 @@ python pack_video.py "動画フォルダのパス" \
   --prompt-password
 ```
 - デフォルトで元の動画ファイルは削除されません。
-- 進捗は `.upload_state_e2ee.json` に保存されるため、途中で止まっても同じコマンドで続きから再開できます。
-- 360p 生成を省きたい場合は `--no-360p`、API 制限が出た場合は `--workers 2` を指定してください。
+- 進捗は `.upload_state_e2ee.json` に保存されるため、途中で止まっても続きから自動再開できます。
+- 自分で `.exe` をビルドしたい場合は `packer\build_exe.ps1` を実行してください。
 
 ### 3. Cloudflare Pages へ無料デプロイ
 ```bash

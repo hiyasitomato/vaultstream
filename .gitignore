@@ -13,6 +13,10 @@ pwa/.env.local
 packer/credentials.json
 packer/token.json
 packer/.upload_state*.json
+packer/vaultstream_gui_settings.json
+packer/build/
+packer/dist/
+packer/*.spec
 packer/__pycache__/
 packer/.venv/
 

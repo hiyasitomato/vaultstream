@@ -160,11 +160,34 @@ class GoogleApiUploader:
         service.files().update(fileId=file_id, body={"trashed": True}).execute()
 
 
+def _win_no_window_kwargs() -> Dict[str, object]:
+    if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def find_ffmpeg_bin(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    if sys.platform == "win32":
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            winget_link = Path(local_app) / "Microsoft" / "WinGet" / "Links" / f"{name}.exe"
+            if winget_link.exists():
+                return str(winget_link)
+            pkg_root = Path(local_app) / "Microsoft" / "WinGet" / "Packages"
+            if pkg_root.exists():
+                for candidate in pkg_root.glob(f"*FFmpeg*/**/bin/{name}.exe"):
+                    return str(candidate)
+    return None
+
+
 def check_ffmpeg_available() -> None:
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+    if not find_ffmpeg_bin("ffmpeg") or not find_ffmpeg_bin("ffprobe"):
         raise RuntimeError(
             "ffmpeg または ffprobe が PATH に見つかりません。\n"
-            "FFmpeg をインストールして PATH を通してから再実行してください。\n"
+            "FFmpeg をインストールしてから再実行してください。\n"
             "  Windows: winget install Gyan.FFmpeg\n"
             "  macOS:   brew install ffmpeg\n"
             "  Linux:   sudo apt install ffmpeg"
@@ -234,8 +257,9 @@ def ensure_vault_master_key(
 
 
 def probe_video(input_path: Path) -> Dict[str, object]:
+    ffprobe_bin = find_ffmpeg_bin("ffprobe") or "ffprobe"
     cmd = [
-        "ffprobe",
+        ffprobe_bin,
         "-v",
         "quiet",
         "-print_format",
@@ -244,7 +268,14 @@ def probe_video(input_path: Path) -> Dict[str, object]:
         "-show_streams",
         str(input_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        **_win_no_window_kwargs(),
+    )
     data = json.loads(proc.stdout)
 
     duration = float(data.get("format", {}).get("duration", 0.0) or 0.0)
@@ -271,9 +302,10 @@ def probe_video(input_path: Path) -> Dict[str, object]:
 
 
 def generate_thumbnail(input_path: Path, output_path: Path, duration: float) -> bool:
+    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     seek_sec = min(max(duration * 0.1, 1.0), 15.0) if duration > 2.0 else 0.0
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-y",
         "-ss",
         f"{seek_sec:.2f}",
@@ -287,11 +319,12 @@ def generate_thumbnail(input_path: Path, output_path: Path, duration: float) -> 
         "3",
         str(output_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
     return proc.returncode == 0 and output_path.exists()
 
 
 def generate_sprite_sheet(input_path: Path, output_path: Path, duration: float) -> bool:
+    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     safe_dur = max(duration, 1.0)
     fps_val = 36.0 / safe_dur
     vf = (
@@ -301,7 +334,7 @@ def generate_sprite_sheet(input_path: Path, output_path: Path, duration: float) 
         "tile=6x6"
     )
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-y",
         "-i",
         str(input_path),
@@ -313,7 +346,7 @@ def generate_sprite_sheet(input_path: Path, output_path: Path, duration: float) 
         "5",
         str(output_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
     return proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
@@ -325,10 +358,11 @@ def encode_hls(
     copy_streams: bool,
     hls_key: Optional[bytes] = None,
 ) -> Path:
+    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     playlist_path = out_dir / "index.m3u8"
     segment_pattern = str(out_dir / ("%04d.enc" if hls_key is not None else "seg_%04d.ts"))
 
-    cmd = ["ffmpeg", "-y", "-i", str(input_path)]
+    cmd = [ffmpeg_bin, "-y", "-i", str(input_path)]
     if copy_streams:
         cmd += ["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"]
     else:
@@ -381,7 +415,7 @@ def encode_hls(
         str(playlist_path),
     ]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
     if proc.returncode != 0 or not playlist_path.exists():
         raise RuntimeError(f"FFmpeg HLS 変換に失敗しました:\n{proc.stderr[-1000:]}")
     return playlist_path
@@ -394,11 +428,12 @@ def encode_low_hls(
     src_height: int,
     hls_key: Optional[bytes] = None,
 ) -> Tuple[Path, int, int]:
+    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     playlist_path = out_dir / "low.m3u8"
     segment_pattern = str(out_dir / ("l%04d.enc" if hls_key is not None else "low_%04d.ts"))
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-y",
         "-i",
         str(input_path),
@@ -457,7 +492,7 @@ def encode_low_hls(
         str(playlist_path),
     ]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
     if proc.returncode != 0 or not playlist_path.exists():
         raise RuntimeError(f"FFmpeg 360p 変換に失敗しました:\n{proc.stderr[-800:]}")
 
