@@ -43,10 +43,12 @@ Yet existing ways to watch your personal video library from Google Drive all fal
 - **6×6 Storyboard Hover Previews**: Smooth 36-frame scrub previews on both library cards and the unified custom seek bar.
 - **Single Encrypted Catalog (`library_index.enc`) + IndexedDB Cache**: Instant home screen load even with hundreds of videos.
 
-### Full End-to-End Encryption (Zero-Knowledge on Drive)
-- **Video Segments**: AES-128-CBC with a unique random 16-byte key per video & rendition.
-- **Metadata, Thumbnails, Sprites, Playlists, Genres & Watch History**: AES-256-GCM derived from your master passphrase via PBKDF2-SHA256 (100,000 iterations).
-- **Anonymized Storage**: Random 16-char hex folder names and `application/octet-stream` MIME types on Google Drive.
+### Full End-to-End Encryption & False-Positive Protection (Zero-Knowledge on Drive)
+Many people hesitate to store personal videos on Google Drive due to privacy concerns or accidental automated false-positive flags. VaultStream protects your private library with **4 layers of defense**:
+- **Client-Side E2EE Before Upload**: Video segments are encrypted with **AES-128-CBC** (unique random key per video) and all metadata, thumbnails, 6×6 sprites, playlists, genres, and watch history are encrypted with **AES-256-GCM** (PBKDF2-SHA256, 100,000 iterations) *before* leaving your device.
+- **Anonymized Names & MIME Types**: Every folder is a random 16-char hex string, every file is `.enc`, and every MIME type is `application/octet-stream` — preventing automated media thumbnailing or false-positive content scans.
+- **Official API + Least-Privilege `drive.file` Scope**: Talks directly to Google's official Drive API using only `drive.file` (cannot access any other files in your Drive).
+- **100% Private Personal Use (No Public Sharing)**: No shared links, no third-party CDN abuse — stays cleanly within normal private cloud storage usage. *(Note: Always comply with applicable laws and Google's Terms of Service; never use Drive for public redistribution.)*
 
 ### Modern Viewing, Mobile Upload & Library Management (PC / iPad / Phone PWA)
 - **Built-in Smartphone / Browser E2EE Uploader (Zero PC Needed)**: Select videos directly from iPhone Photos or Android Gallery — VaultStream automatically generates the encrypted thumbnail, 6×6 hover sprite, and AES-256-GCM encrypted video right inside your browser and uploads straight to your Google Drive.
