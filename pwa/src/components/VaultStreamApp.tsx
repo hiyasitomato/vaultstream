@@ -1834,7 +1834,7 @@ export default function VaultStreamApp() {
                       type="text"
                       value={newGenreName}
                       onChange={(e) => setNewGenreName(e.target.value)}
-                      placeholder="ジャンル名を入力（例: 旅行、Vlog、家族、ライブ、チュートリアル...）"
+                      placeholder="ジャンル名を入力（例: バトル、異世界、日常、ラブコメ、SF...）"
                       className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
                     />
                     <button

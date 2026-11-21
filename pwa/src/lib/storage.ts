@@ -1,3 +1,4 @@
+import { DEFAULT_CUSTOM_GENRES } from "./genres";
 import type {
   CustomGenreDef,
   PlaybackProgress,
@@ -178,7 +179,7 @@ export function createDefaultUserData(): SyncedVaultUserData {
     version: 1,
     updatedAt: 0,
     useAutoGenres: false,
-    customGenres: [],
+    customGenres: DEFAULT_CUSTOM_GENRES.map((g) => ({ ...g })),
     videoMeta: {},
   };
 }

@@ -74,7 +74,7 @@ export default function TagEditorModal({
                 type="text"
                 value={newGenre}
                 onChange={(e) => setNewGenre(e.target.value)}
-                placeholder="新しいジャンル名を入力（例: 旅行、Vlog、チュートリアル）"
+                placeholder="新しいジャンル名を入力（例: バトル、日常、異世界、SF...）"
                 className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
               />
               <button
