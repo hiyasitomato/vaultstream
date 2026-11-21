@@ -40,8 +40,9 @@ jobs:
         working-directory: pwa
         env:
           NEXT_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
-          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ""
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: "${{ vars.PUBLIC_GOOGLE_CLIENT_ID }}"
           NEXT_PUBLIC_VAULT_FOLDER_ID: ""
+          NEXT_PUBLIC_DRIVE_SCOPE: "https://www.googleapis.com/auth/drive.file"
         run: |
           npm run build
           touch out/.nojekyll

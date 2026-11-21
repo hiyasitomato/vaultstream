@@ -20,7 +20,9 @@ import type {
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
-export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+export const DRIVE_SCOPE =
+  process.env.NEXT_PUBLIC_DRIVE_SCOPE ||
+  "https://www.googleapis.com/auth/drive.file";
 
 const SYNC_FILE_NAME = "user_meta.enc";
 const LIBRARY_INDEX_FILE_NAME = "library_index.enc";
@@ -387,20 +389,23 @@ export async function driveFetchBlobUrl(
 
 export async function createDriveFolder(
   name: string,
-  parentId: string,
+  parentId: string | null,
   accessToken: string
 ): Promise<string> {
+  const body: Record<string, unknown> = {
+    name,
+    mimeType: "application/vnd.google-apps.folder",
+  };
+  if (parentId) {
+    body.parents = [parentId];
+  }
   const response = await fetch(`${DRIVE_API_BASE}/files?fields=id`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
     },
-    body: JSON.stringify({
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [parentId],
-    }),
+    body: JSON.stringify(body),
   });
   if (response.status === 401) throw new Error("AUTH_EXPIRED");
   if (!response.ok) {
@@ -408,6 +413,28 @@ export async function createDriveFolder(
   }
   const data = (await response.json()) as { id: string };
   return data.id;
+}
+
+export async function ensureVaultRootFolder(
+  accessToken: string,
+  folderName = "VaultStream"
+): Promise<string> {
+  const escaped = folderName.replace(/'/g, "\\'");
+  const query = `mimeType = 'application/vnd.google-apps.folder' and name = '${escaped}' and trashed = false`;
+  const params = new URLSearchParams({
+    q: query,
+    fields: "files(id, name, createdTime)",
+    pageSize: "5",
+    orderBy: "createdTime asc",
+  });
+  const data = await driveFetchJson<{ files?: DriveFileEntry[] }>(
+    `${DRIVE_API_BASE}/files?${params.toString()}`,
+    accessToken
+  );
+  if (data.files && data.files.length > 0) {
+    return data.files[0].id;
+  }
+  return createDriveFolder(folderName, null, accessToken);
 }
 
 export async function saveVaultConfigToDrive(

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -42,6 +43,7 @@ import {
 import { unlockVaultWithPassphrase } from "@/lib/crypto";
 import {
   clearThumbnailCache,
+  ensureVaultRootFolder,
   fetchVaultVideosFast,
   formatBytes,
   inspectVaultRoot,
@@ -395,14 +397,15 @@ export default function VaultStreamApp() {
       existingKey: CryptoKey | null = null,
       forceFullScan = false
     ) => {
-      const cleanFolderId = targetFolderId.trim();
-      if (!cleanFolderId) {
-        setError("Google Drive フォルダ ID が設定されていません。");
-        return;
-      }
+      let cleanFolderId = targetFolderId.trim();
       setLoading(true);
       setError(null);
       try {
+        if (!cleanFolderId) {
+          cleanFolderId = await ensureVaultRootFolder(token, "VaultStream");
+          setFolderId(cleanFolderId);
+          setSavedFolderIdOverride(cleanFolderId);
+        }
         // Single root inspection call (replaces 3 separate root listings!)
         const snapshot = await inspectVaultRoot(cleanFolderId, token);
         const cfg = snapshot.vaultConfig;
@@ -533,7 +536,7 @@ export default function VaultStreamApp() {
     if (savedFolder) setFolderId(savedFolder);
 
     const savedAuth = loadAuthSession();
-    if (savedAuth && resolvedFolder) {
+    if (savedAuth) {
       setAccessToken(savedAuth.accessToken);
       loadLibrary(savedAuth.accessToken, resolvedFolder);
     }
@@ -1493,16 +1496,28 @@ export default function VaultStreamApp() {
 
             <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4 text-left text-xs text-zinc-400">
               <div className="flex items-center justify-between py-1">
-                <span>保存先フォルダ ID</span>
+                <span>保存先フォルダ</span>
                 <code className="max-w-[60%] truncate text-zinc-200">
-                  {effectiveFolderIdValid ? folderId : "未設定"}
+                  {effectiveFolderIdValid ? folderId : "ログイン時に VaultStream フォルダを自動作成"}
                 </code>
               </div>
               <div className="flex items-center justify-between py-1">
                 <span>OAuth クライアント</span>
                 <span className={effectiveClientIdValid ? "text-emerald-400" : "text-amber-400"}>
-                  {effectiveClientIdValid ? "設定済み" : "未設定"}
+                  {effectiveClientIdValid ? "設定済み" : "未設定（⚙設定から入力）"}
                 </span>
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-emerald-500/20 bg-emerald-950/20 p-3.5 text-left text-[11px] leading-relaxed text-emerald-200/90">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+              <div>
+                <p className="font-semibold text-emerald-200">
+                  ゼロサーバー ＆ 最小権限（drive.file）設計
+                </p>
+                <p className="mt-0.5 text-emerald-200/80">
+                  VaultStream 自身が作成した専用フォルダのみにアクセスし、Google Drive 内の他のファイルは一切読み取りません。動画・トークン・パスワードはブラウザ内のみで処理され、外部サーバーには一切送信されません。
+                </p>
               </div>
             </div>
 
@@ -1510,11 +1525,28 @@ export default function VaultStreamApp() {
               type="button"
               onClick={handleSignIn}
               disabled={authLoading}
-              className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
+              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
             >
               <LogIn className="h-4 w-4" />
               {authLoading ? "Google に接続しています..." : "Google アカウントでログイン"}
             </button>
+
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-4 border-t border-zinc-800/80 pt-4 text-[11px] text-zinc-500">
+              <Link href="/privacy" className="hover:text-zinc-300 hover:underline">
+                プライバシーポリシー (Privacy Policy)
+              </Link>
+              <Link href="/terms" className="hover:text-zinc-300 hover:underline">
+                利用規約 (Terms)
+              </Link>
+              <a
+                href="https://github.com/hiyasitomato/vaultstream"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-zinc-300 hover:underline"
+              >
+                GitHub (MIT Open Source)
+              </a>
+            </div>
           </section>
         </main>
       ) : vaultConfig && !masterKey ? (
@@ -2424,6 +2456,10 @@ export default function VaultStreamApp() {
             </div>
 
             <div className="space-y-4">
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 px-3.5 py-2.5 text-[11px] leading-relaxed text-emerald-200/90">
+                🔒 入力した設定はあなたのブラウザ内（localStorage）のみに保存され、外部サーバーへ送信されることはありません。
+              </div>
+
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                   Web 用 Google OAuth クライアント ID
@@ -2439,16 +2475,30 @@ export default function VaultStreamApp() {
 
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
-                  Google Drive フォルダ ID（フォルダ URL をそのまま貼っても OK）
+                  Google Drive フォルダ ID（空欄ならログイン時に VaultStream フォルダを自動作成）
                 </label>
                 <input
                   type="text"
                   value={draftFolderId}
                   onChange={(e) => setDraftFolderId(e.target.value)}
-                  placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz"
+                  placeholder="空欄で自動作成（またはフォルダ URL / ID を貼り付け）"
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
                 />
               </div>
+
+              <details className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-3.5 py-2.5 text-[11px] text-zinc-400">
+                <summary className="cursor-pointer font-semibold text-zinc-200">
+                  自分の OAuth クライアント ID を作る手順（3 分）
+                </summary>
+                <ol className="mt-2 list-decimal space-y-1 pl-4 leading-relaxed">
+                  <li>Google Cloud Console で無料プロジェクトを作成</li>
+                  <li>「API とサービス → ライブラリ」で Google Drive API を有効化</li>
+                  <li>「OAuth 同意画面」を外部 / テストにし、テストユーザーに自分の Gmail を追加</li>
+                  <li>「クライアントを作成 → ウェブアプリケーション」を選択</li>
+                  <li>「承認済みの JavaScript 生成元」にこのサイトの URL（末尾の / なし）を登録</li>
+                  <li>発行されたクライアント ID を上の欄に貼り付けて保存！</li>
+                </ol>
+              </details>
             </div>
 
             <div className="mt-6 flex justify-end gap-2">
