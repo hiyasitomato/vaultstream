@@ -80,6 +80,7 @@ import {
   loadLocalUserData,
   loadSavedPassphrase,
   mergeProgressMaps,
+  mergeSyncedUserData,
   saveAllProgress,
   saveAuthSession,
   saveCachedVideoList,
@@ -240,6 +241,14 @@ export default function VaultStreamApp() {
   const [userData, setUserData] = useState<SyncedVaultUserData>(() => createDefaultUserData());
   const syncFileIdRef = useRef<string | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSyncDataRef = useRef<SyncedVaultUserData | null>(null);
+  const syncTimerIsUrgentRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const syncAuthCtxRef = useRef<{
+    token: string | null;
+    key: CryptoKey | null;
+    folder: string;
+  }>({ token: null, key: null, folder: "" });
   const [syncStatus, setSyncStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   const [loading, setLoading] = useState(false);
@@ -472,40 +481,148 @@ export default function VaultStreamApp() {
 
   const { customGenres, videoMeta: userMetaMap, useAutoGenres } = userData;
 
+  const flushCloudSync = useCallback(
+    async (token: string | null, key: CryptoKey | null, targetFolder: string) => {
+      const payload = pendingSyncDataRef.current;
+      const cleanFolder = targetFolder.trim();
+      if (!payload || !token || !cleanFolder) return;
+
+      if (syncInFlightRef.current) {
+        // Another save is currently uploading; retry shortly with the latest pending payload
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerIsUrgentRef.current = true;
+        syncTimerRef.current = setTimeout(() => {
+          syncTimerRef.current = null;
+          syncTimerIsUrgentRef.current = false;
+          flushCloudSync(token, key, cleanFolder);
+        }, 350);
+        return;
+      }
+
+      pendingSyncDataRef.current = null;
+      syncInFlightRef.current = true;
+      setSyncStatus("saving");
+
+      try {
+        // Atomic Read-Merge-Write: merge with latest remote user_meta.enc so concurrent devices
+        // or background uploader syncs can NEVER clobber each other's genres/favorites!
+        let toSave = payload;
+        if (syncFileIdRef.current) {
+          const latestRemote = await loadSyncedUserDataFromDrive(
+            syncFileIdRef.current,
+            token,
+            key
+          ).catch(() => null);
+          if (latestRemote) {
+            toSave = {
+              ...mergeSyncedUserData(payload, latestRemote),
+              updatedAt: Math.max(payload.updatedAt, latestRemote.updatedAt, Date.now()),
+            };
+          }
+        }
+
+        const fileId = await saveSyncedUserDataToDrive(
+          cleanFolder,
+          token,
+          key,
+          toSave,
+          syncFileIdRef.current
+        );
+        syncFileIdRef.current = fileId;
+        saveLocalUserData(toSave);
+        setSyncStatus("saved");
+      } catch {
+        // Keep payload queued so next edit or flush retries cleanly
+        if (!pendingSyncDataRef.current) {
+          pendingSyncDataRef.current = payload;
+        }
+        setSyncStatus("error");
+      } finally {
+        syncInFlightRef.current = false;
+        if (pendingSyncDataRef.current) {
+          if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+          syncTimerIsUrgentRef.current = true;
+          syncTimerRef.current = setTimeout(() => {
+            syncTimerRef.current = null;
+            syncTimerIsUrgentRef.current = false;
+            const ctx = syncAuthCtxRef.current;
+            flushCloudSync(ctx.token ?? token, ctx.key ?? key, ctx.folder || cleanFolder);
+          }, 250);
+        }
+      }
+    },
+    []
+  );
+
   const scheduleCloudSync = useCallback(
     (
       nextData: SyncedVaultUserData,
       token: string | null,
       key: CryptoKey | null,
       targetFolder: string,
-      delayMs = 900
+      delayMs = 250,
+      urgent = true
     ) => {
       if (!token || !targetFolder.trim()) return;
+      syncAuthCtxRef.current = { token, key, folder: targetFolder.trim() };
+      pendingSyncDataRef.current = nextData;
+
+      // CRITICAL: Never let slow non-urgent playback progress updates cancel an already-scheduled
+      // urgent genre/favorite save timer!
+      if (!urgent && syncTimerRef.current && syncTimerIsUrgentRef.current) {
+        return;
+      }
+      if (!urgent && syncTimerRef.current) {
+        return;
+      }
+
       if (syncTimerRef.current) {
         clearTimeout(syncTimerRef.current);
       }
+      syncTimerIsUrgentRef.current = urgent;
       setSyncStatus("saving");
-      syncTimerRef.current = setTimeout(async () => {
-        try {
-          const fileId = await saveSyncedUserDataToDrive(
-            targetFolder.trim(),
-            token,
-            key,
-            nextData,
-            syncFileIdRef.current
-          );
-          syncFileIdRef.current = fileId;
-          setSyncStatus("saved");
-        } catch {
-          setSyncStatus("error");
-        }
+      syncTimerRef.current = setTimeout(() => {
+        syncTimerRef.current = null;
+        syncTimerIsUrgentRef.current = false;
+        flushCloudSync(token, key, targetFolder);
       }, delayMs);
     },
-    []
+    [flushCloudSync]
   );
 
+  // Flush any pending genre/favorite changes immediately when user refreshes or switches tabs/apps
+  useEffect(() => {
+    syncAuthCtxRef.current = { token: accessToken, key: masterKey, folder: folderId.trim() };
+  }, [accessToken, masterKey, folderId]);
+
+  useEffect(() => {
+    const flushNow = () => {
+      if (!pendingSyncDataRef.current) return;
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+        syncTimerIsUrgentRef.current = false;
+      }
+      const ctx = syncAuthCtxRef.current;
+      flushCloudSync(ctx.token, ctx.key, ctx.folder);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushNow();
+    };
+    window.addEventListener("pagehide", flushNow);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushNow);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [flushCloudSync]);
+
   const updateUserData = useCallback(
-    (updater: (prev: SyncedVaultUserData) => SyncedVaultUserData, delayMs = 900) => {
+    (
+      updater: (prev: SyncedVaultUserData) => SyncedVaultUserData,
+      delayMs = 250,
+      urgent = true
+    ) => {
       setUserData((prev) => {
         const next: SyncedVaultUserData = {
           ...updater(prev),
@@ -513,7 +630,7 @@ export default function VaultStreamApp() {
           updatedAt: Date.now(),
         };
         saveLocalUserData(next);
-        scheduleCloudSync(next, accessToken, masterKey, folderId, delayMs);
+        scheduleCloudSync(next, accessToken, masterKey, folderId, delayMs, urgent);
         return next;
       });
     },
@@ -591,39 +708,46 @@ export default function VaultStreamApp() {
 
         const localProgress = loadAllProgress();
         if (remoteUserData) {
-          const local = loadLocalUserData();
-          const mergedProgress = mergeProgressMaps(
-            localProgress,
-            remoteUserData.progress
-          );
+          const localRaw = loadLocalUserData();
+          const localWithProgress: SyncedVaultUserData = {
+            ...localRaw,
+            progress: mergeProgressMaps(localProgress, localRaw.progress),
+          };
+          const mergedBase = mergeSyncedUserData(localWithProgress, remoteUserData);
+          const mergedProgress = mergedBase.progress ?? localProgress;
           saveAllProgress(mergedProgress);
           setProgressMap(mergedProgress);
 
-          const baseData =
-            remoteUserData.updatedAt >= local.updatedAt ? remoteUserData : local;
           const seededGenres =
-            baseData.customGenres && baseData.customGenres.length > 0
-              ? baseData.customGenres
+            mergedBase.customGenres && mergedBase.customGenres.length > 0
+              ? mergedBase.customGenres
               : DEFAULT_CUSTOM_GENRES.map((g) => ({ ...g }));
           const mergedUserData: SyncedVaultUserData = {
-            ...baseData,
+            ...mergedBase,
             customGenres: seededGenres,
             progress: mergedProgress,
           };
           setUserData(mergedUserData);
           saveLocalUserData(mergedUserData);
 
+          const remoteMetaJson = JSON.stringify(remoteUserData.videoMeta ?? {});
+          const mergedMetaJson = JSON.stringify(mergedUserData.videoMeta ?? {});
+          const remoteGenresJson = JSON.stringify(remoteUserData.customGenres ?? []);
+          const mergedGenresJson = JSON.stringify(mergedUserData.customGenres ?? []);
           const remoteProgJson = JSON.stringify(remoteUserData.progress ?? {});
           const mergedProgJson = JSON.stringify(mergedProgress);
           if (
-            local.updatedAt > remoteUserData.updatedAt ||
+            remoteMetaJson !== mergedMetaJson ||
+            remoteGenresJson !== mergedGenresJson ||
             remoteProgJson !== mergedProgJson
           ) {
             scheduleCloudSync(
               { ...mergedUserData, updatedAt: Date.now() },
               token,
               keyToUse,
-              cleanFolderId
+              cleanFolderId,
+              300,
+              true
             );
           } else {
             setSyncStatus("saved");
@@ -825,7 +949,8 @@ export default function VaultStreamApp() {
             [videoId]: progress,
           },
         }),
-        3500
+        8000,
+        false
       );
     },
     [updateUserData]
@@ -851,6 +976,7 @@ export default function VaultStreamApp() {
               ...cur,
               thumbnailTimeSec: capturedTimeSec,
               thumbnailUpdatedAt: stamp,
+              updatedAt: Date.now(),
             },
           },
         };
@@ -890,7 +1016,7 @@ export default function VaultStreamApp() {
           ...prev,
           videoMeta: {
             ...prev.videoMeta,
-            [videoId]: { ...cur, favorite: !cur.favorite },
+            [videoId]: { ...cur, favorite: !cur.favorite, updatedAt: Date.now() },
           },
         };
       });
@@ -916,6 +1042,7 @@ export default function VaultStreamApp() {
         }
         return {
           ...prev,
+          customGenresUpdatedAt: Date.now(),
           customGenres: [{ name: cleaned, color }, ...prev.customGenres],
         };
       });
@@ -930,6 +1057,7 @@ export default function VaultStreamApp() {
       if (additions.length === 0) return prev;
       return {
         ...prev,
+        customGenresUpdatedAt: Date.now(),
         customGenres: [...prev.customGenres, ...additions],
       };
     });
@@ -944,19 +1072,26 @@ export default function VaultStreamApp() {
         return;
       }
       updateUserData((prev) => {
+        const now = Date.now();
         const updatedGenres = prev.customGenres.map((g) =>
           g.name === oldName ? { ...g, name: newName } : g
         );
         const updatedMeta: Record<string, VideoUserMeta> = {};
         for (const [vid, meta] of Object.entries(prev.videoMeta)) {
-          updatedMeta[vid] = {
-            ...meta,
-            addedGenres: meta.addedGenres?.map((g) => (g === oldName ? newName : g)),
-            removedGenres: meta.removedGenres?.map((g) => (g === oldName ? newName : g)),
-          };
+          const hadOld =
+            meta.addedGenres?.includes(oldName) || meta.removedGenres?.includes(oldName);
+          updatedMeta[vid] = hadOld
+            ? {
+                ...meta,
+                addedGenres: meta.addedGenres?.map((g) => (g === oldName ? newName : g)),
+                removedGenres: meta.removedGenres?.map((g) => (g === oldName ? newName : g)),
+                updatedAt: now,
+              }
+            : meta;
         }
         return {
           ...prev,
+          customGenresUpdatedAt: now,
           customGenres: updatedGenres,
           videoMeta: updatedMeta,
         };
@@ -970,16 +1105,22 @@ export default function VaultStreamApp() {
   const handleDeleteCustomGenre = useCallback(
     (genreName: string) => {
       updateUserData((prev) => {
+        const now = Date.now();
         const updatedGenres = prev.customGenres.filter((g) => g.name !== genreName);
         const updatedMeta: Record<string, VideoUserMeta> = {};
         for (const [vid, meta] of Object.entries(prev.videoMeta)) {
-          updatedMeta[vid] = {
-            ...meta,
-            addedGenres: meta.addedGenres?.filter((g) => g !== genreName),
-          };
+          const had = meta.addedGenres?.includes(genreName);
+          updatedMeta[vid] = had
+            ? {
+                ...meta,
+                addedGenres: meta.addedGenres?.filter((g) => g !== genreName),
+                updatedAt: now,
+              }
+            : meta;
         }
         return {
           ...prev,
+          customGenresUpdatedAt: now,
           customGenres: updatedGenres,
           videoMeta: updatedMeta,
         };
@@ -995,6 +1136,7 @@ export default function VaultStreamApp() {
       if (!video) return;
 
       updateUserData((prev) => {
+        const now = Date.now();
         const cur = prev.videoMeta[videoId] ?? {};
         const effective = getEffectiveGenres(video, cur, prev.useAutoGenres, prev.customGenres);
         const currentlyHas = effective.includes(genre);
@@ -1011,13 +1153,14 @@ export default function VaultStreamApp() {
         }
 
         const hasInCustom = prev.customGenres.some((g) => g.name === genre);
-        const nextCustomGenres =
-          !currentlyHas && !hasInCustom && !CATEGORY_TAG_SET.has(genre)
-            ? [{ name: genre, color: "rose" }, ...prev.customGenres]
-            : prev.customGenres;
+        const shouldAddCustom = !currentlyHas && !hasInCustom && !CATEGORY_TAG_SET.has(genre);
+        const nextCustomGenres = shouldAddCustom
+          ? [{ name: genre, color: "rose" }, ...prev.customGenres]
+          : prev.customGenres;
 
         return {
           ...prev,
+          customGenresUpdatedAt: shouldAddCustom ? now : prev.customGenresUpdatedAt,
           customGenres: nextCustomGenres,
           videoMeta: {
             ...prev.videoMeta,
@@ -1025,6 +1168,7 @@ export default function VaultStreamApp() {
               ...cur,
               addedGenres: Array.from(added),
               removedGenres: Array.from(removed),
+              updatedAt: now,
             },
           },
         };
@@ -1038,6 +1182,7 @@ export default function VaultStreamApp() {
       const cleaned = genre.trim().replace(/^#/, "");
       if (!cleaned) return;
       updateUserData((prev) => {
+        const now = Date.now();
         const exists = prev.customGenres.some((g) => g.name === cleaned);
         const nextCustom = exists
           ? prev.customGenres
@@ -1049,6 +1194,7 @@ export default function VaultStreamApp() {
         removed.delete(cleaned);
         return {
           ...prev,
+          customGenresUpdatedAt: exists ? prev.customGenresUpdatedAt : now,
           customGenres: nextCustom,
           videoMeta: {
             ...prev.videoMeta,
@@ -1056,6 +1202,7 @@ export default function VaultStreamApp() {
               ...cur,
               addedGenres: Array.from(added),
               removedGenres: Array.from(removed),
+              updatedAt: now,
             },
           },
         };
@@ -1070,11 +1217,12 @@ export default function VaultStreamApp() {
       if (!cleaned || selectedVideoIds.size === 0) return;
 
       updateUserData((prev) => {
+        const now = Date.now();
         const exists = prev.customGenres.some((g) => g.name === cleaned);
-        const nextCustom =
-          mode === "add" && !exists
-            ? [{ name: cleaned, color }, ...prev.customGenres]
-            : prev.customGenres;
+        const addedCustom = mode === "add" && !exists;
+        const nextCustom = addedCustom
+          ? [{ name: cleaned, color }, ...prev.customGenres]
+          : prev.customGenres;
 
         const nextMeta: Record<string, VideoUserMeta> = { ...prev.videoMeta };
         for (const vid of selectedVideoIds) {
@@ -1092,10 +1240,12 @@ export default function VaultStreamApp() {
             ...cur,
             addedGenres: Array.from(added),
             removedGenres: Array.from(removed),
+            updatedAt: now,
           };
         }
         return {
           ...prev,
+          customGenresUpdatedAt: addedCustom ? now : prev.customGenresUpdatedAt,
           customGenres: nextCustom,
           videoMeta: nextMeta,
         };

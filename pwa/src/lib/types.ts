@@ -90,6 +90,7 @@ export interface VideoUserMeta {
   removedGenres?: string[];
   thumbnailTimeSec?: number;
   thumbnailUpdatedAt?: string;
+  updatedAt?: number;
 }
 
 export interface CustomGenreDef {
@@ -100,6 +101,7 @@ export interface CustomGenreDef {
 export interface SyncedVaultUserData {
   version: number;
   updatedAt: number;
+  customGenresUpdatedAt?: number;
   useAutoGenres: boolean;
   customGenres: CustomGenreDef[];
   videoMeta: Record<string, VideoUserMeta>;

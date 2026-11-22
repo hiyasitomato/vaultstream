@@ -193,9 +193,14 @@ export function loadLocalUserData(): SyncedVaultUserData {
       return {
         version: 1,
         updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+        customGenresUpdatedAt:
+          typeof parsed.customGenresUpdatedAt === "number"
+            ? parsed.customGenresUpdatedAt
+            : undefined,
         useAutoGenres: Boolean(parsed.useAutoGenres),
         customGenres: Array.isArray(parsed.customGenres) ? parsed.customGenres : [],
         videoMeta: parsed.videoMeta && typeof parsed.videoMeta === "object" ? parsed.videoMeta : {},
+        progress: parsed.progress && typeof parsed.progress === "object" ? parsed.progress : undefined,
       };
     }
 
@@ -221,6 +226,81 @@ export function loadLocalUserData(): SyncedVaultUserData {
   } catch {
     return createDefaultUserData();
   }
+}
+
+export function mergeSyncedUserData(
+  local: SyncedVaultUserData,
+  remote: SyncedVaultUserData
+): SyncedVaultUserData {
+  const localGlobalTs = local.updatedAt || 0;
+  const remoteGlobalTs = remote.updatedAt || 0;
+  const preferRemoteGlobal = remoteGlobalTs >= localGlobalTs;
+
+  // 1. Per-video metadata merge (prevents losing recent tags/favorites on refresh or concurrent upload sync!)
+  const mergedVideoMeta: Record<string, VideoUserMeta> = {};
+  const allVideoIds = new Set<string>([
+    ...Object.keys(local.videoMeta ?? {}),
+    ...Object.keys(remote.videoMeta ?? {}),
+  ]);
+
+  for (const vid of allVideoIds) {
+    const lMeta = local.videoMeta?.[vid];
+    const rMeta = remote.videoMeta?.[vid];
+    if (lMeta && !rMeta) {
+      mergedVideoMeta[vid] = { ...lMeta };
+      continue;
+    }
+    if (rMeta && !lMeta) {
+      mergedVideoMeta[vid] = { ...rMeta };
+      continue;
+    }
+    if (!lMeta || !rMeta) continue;
+
+    const lTs = lMeta.updatedAt ?? 0;
+    const rTs = rMeta.updatedAt ?? 0;
+    const pickLocal =
+      lTs > 0 || rTs > 0 ? lTs >= rTs : !preferRemoteGlobal;
+    const primary = pickLocal ? lMeta : rMeta;
+    const secondary = pickLocal ? rMeta : lMeta;
+
+    mergedVideoMeta[vid] = {
+      ...primary,
+      thumbnailTimeSec: primary.thumbnailTimeSec ?? secondary.thumbnailTimeSec,
+      thumbnailUpdatedAt: primary.thumbnailUpdatedAt ?? secondary.thumbnailUpdatedAt,
+      updatedAt: Math.max(lTs, rTs) || undefined,
+    };
+  }
+
+  // 2. Custom genres merge: respect explicit customGenresUpdatedAt when present, otherwise newest non-empty list
+  const lGenresTs = local.customGenresUpdatedAt ?? 0;
+  const rGenresTs = remote.customGenresUpdatedAt ?? 0;
+  let mergedCustomGenres: CustomGenreDef[];
+  if (lGenresTs > 0 || rGenresTs > 0) {
+    mergedCustomGenres =
+      lGenresTs >= rGenresTs ? [...(local.customGenres ?? [])] : [...(remote.customGenres ?? [])];
+  } else {
+    const primaryGenres = preferRemoteGlobal
+      ? remote.customGenres ?? []
+      : local.customGenres ?? [];
+    const secondaryGenres = preferRemoteGlobal
+      ? local.customGenres ?? []
+      : remote.customGenres ?? [];
+    mergedCustomGenres =
+      primaryGenres.length > 0 ? [...primaryGenres] : [...secondaryGenres];
+  }
+
+  // 3. Progress merge (already per-video newest timestamp)
+  const mergedProgress = mergeProgressMaps(local.progress ?? {}, remote.progress);
+
+  return {
+    version: 1,
+    updatedAt: Math.max(localGlobalTs, remoteGlobalTs),
+    customGenresUpdatedAt: Math.max(lGenresTs, rGenresTs) || undefined,
+    useAutoGenres: preferRemoteGlobal ? remote.useAutoGenres : local.useAutoGenres,
+    customGenres: mergedCustomGenres,
+    videoMeta: mergedVideoMeta,
+    progress: mergedProgress,
+  };
 }
 
 export function saveLocalUserData(data: SyncedVaultUserData): void {
