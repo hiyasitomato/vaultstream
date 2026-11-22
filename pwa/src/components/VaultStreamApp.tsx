@@ -507,21 +507,23 @@ export default function VaultStreamApp() {
       setSyncStatus("saving");
 
       try {
-        // Atomic Read-Merge-Write: merge with latest remote user_meta.enc so concurrent devices
-        // or background uploader syncs can NEVER clobber each other's genres/favorites!
+        // Atomic Read-Merge-Write: ALWAYS fetch & merge latest remote user_meta.enc before writing.
+        // If an existing remote syncFileId cannot be read (transient network error), ABORT write and retry
+        // instead of blindly overwriting remote data!
         let toSave = payload;
         if (syncFileIdRef.current) {
           const latestRemote = await loadSyncedUserDataFromDrive(
             syncFileIdRef.current,
             token,
             key
-          ).catch(() => null);
-          if (latestRemote) {
-            toSave = {
-              ...mergeSyncedUserData(payload, latestRemote),
-              updatedAt: Math.max(payload.updatedAt, latestRemote.updatedAt, Date.now()),
-            };
+          );
+          if (!latestRemote) {
+            throw new Error("REMOTE_META_READ_FAILED");
           }
+          toSave = {
+            ...mergeSyncedUserData(payload, latestRemote),
+            updatedAt: Math.max(payload.updatedAt, latestRemote.updatedAt, Date.now()),
+          };
         }
 
         const fileId = await saveSyncedUserDataToDrive(
@@ -533,6 +535,7 @@ export default function VaultStreamApp() {
         );
         syncFileIdRef.current = fileId;
         saveLocalUserData(toSave);
+        setUserData((cur) => mergeSyncedUserData(cur, toSave));
         setSyncStatus("saved");
       } catch {
         // Keep payload queued so next edit or flush retries cleanly
@@ -755,7 +758,9 @@ export default function VaultStreamApp() {
           } else {
             setSyncStatus("saved");
           }
-        } else if (Object.keys(localProgress).length > 0) {
+        } else if (!snapshot.syncFileId && Object.keys(localProgress).length > 0) {
+          // Only initialize a brand-new user_meta.enc when Drive truly has NO sync file yet.
+          // Never overwrite an existing remote syncFileId if reading it failed transiently!
           const local = loadLocalUserData();
           const withProgress: SyncedVaultUserData = {
             ...local,
