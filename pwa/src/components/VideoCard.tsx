@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
-import { BookOpen, Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Sparkles, Tag } from "lucide-react";
+import { BookOpen, Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Tag } from "lucide-react";
 import {
   driveFetchCachedThumbnailUrl,
   driveFetchMangaPageUrl,
@@ -473,7 +473,7 @@ function VideoCard({
             </div>
           ) : !showingScrubSprite ? (
             <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors duration-200 group-hover:bg-black/35">
-              <div className="flex h-12 w-12 scale-90 items-center justify-center rounded-full bg-rose-600/95 text-white opacity-0 shadow-xl transition-all duration-200 group-hover:scale-100 group-hover:opacity-100">
+              <div className="flex h-12 w-12 scale-90 items-center justify-center rounded-full bg-black/80 text-white opacity-0 shadow-xl ring-1 ring-white/20 backdrop-blur-sm transition-all duration-200 group-hover:scale-100 group-hover:opacity-100">
                 <Play className="ml-0.5 h-5 w-5 fill-current" />
               </div>
             </div>
@@ -499,7 +499,7 @@ function VideoCard({
         {!selectionMode && (
           <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1">
             {isManga && (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-zinc-950 shadow">
+              <span className="inline-flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tracking-wider text-zinc-100 backdrop-blur-sm">
                 <BookOpen className="h-2.5 w-2.5" />
                 漫画
               </span>
@@ -510,7 +510,7 @@ function VideoCard({
               </span>
             )}
             {seriesBadge && !compact && (
-              <span className="max-w-[130px] truncate rounded bg-rose-600/90 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              <span className="max-w-[130px] truncate rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-200 backdrop-blur-sm">
                 {seriesBadge}
               </span>
             )}
@@ -668,14 +668,18 @@ function VideoCard({
                 onOpenCrossMediaSet(companion, video);
               }
             }}
-            className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-lg border border-amber-400/40 bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-sky-500/15 px-2 py-1 text-[10px] font-bold text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)] backdrop-blur-md transition hover:border-amber-300/70 hover:brightness-125"
+            className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-[10px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
             title={
               isManga
                 ? `同じ作品のアニメ（${linkedItems.length}本）を漫画と同時に再生`
                 : `同じ作品の漫画を動画と同時に開く`
             }
           >
-            <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
+            {isManga ? (
+              <Film className="h-3 w-3 shrink-0 text-zinc-400" />
+            ) : (
+              <BookOpen className="h-3 w-3 shrink-0 text-zinc-400" />
+            )}
             <span>
               {isManga
                 ? `アニメあり (${linkedItems.length}本)・同時視聴`
@@ -707,12 +711,12 @@ function VideoCard({
                     e.stopPropagation();
                     onClickGenre(genre);
                   }}
-                  className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition hover:brightness-125 ${getGenreStyle(
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition ${getGenreStyle(
                     genre,
                     customGenres
                   )}`}
                 >
-                  #{genre}
+                  {genre}
                 </button>
               ))}
               {!tagsExpanded && hiddenCount > 0 && (
@@ -747,7 +751,7 @@ function VideoCard({
                     e.stopPropagation();
                     onEditTags(video);
                   }}
-                  className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-zinc-700/80 px-1.5 py-0.5 text-[10px] text-zinc-400 transition hover:border-rose-500/60 hover:text-rose-300"
+                  className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-200"
                   title="タグを追加・編集"
                 >
                   <Plus className="h-2.5 w-2.5" />

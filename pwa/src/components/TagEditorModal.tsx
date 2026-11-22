@@ -4,10 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, Search, Tag, X } from "lucide-react";
 import {
   CATEGORY_TAG_SET,
-  GENRE_COLOR_OPTIONS,
   GENRE_GROUP_TABS,
   type GenreGroupId,
-  getGenreStyle,
   matchesGenreGroup,
   sortGenresForCard,
 } from "@/lib/genres";
@@ -31,7 +29,6 @@ export default function TagEditorModal({
   onClose,
 }: TagEditorModalProps) {
   const [newGenre, setNewGenre] = useState("");
-  const [selectedColor, setSelectedColor] = useState("rose");
   const [tagSearch, setTagSearch] = useState("");
   const [activeGroup, setActiveGroup] = useState<GenreGroupId>("main");
   const activeSet = useMemo(() => new Set(currentGenres), [currentGenres]);
@@ -101,7 +98,7 @@ export default function TagEditorModal({
     e.preventDefault();
     const cleaned = newGenre.trim().replace(/^#/, "");
     if (!cleaned) return;
-    onAddCustomGenre(video.id, cleaned, selectedColor);
+    onAddCustomGenre(video.id, cleaned, "zinc");
     setNewGenre("");
   };
 
@@ -120,7 +117,7 @@ export default function TagEditorModal({
         <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-3.5">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
-              <Tag className="h-4 w-4 text-rose-400" />
+              <Tag className="h-4 w-4 text-zinc-400" />
               <span>ジャンル・タグ設定</span>
             </div>
             <p className="mt-0.5 truncate text-xs text-zinc-400">{video.title}</p>
@@ -154,14 +151,11 @@ export default function TagEditorModal({
                     key={`sel-${genre}`}
                     type="button"
                     onClick={() => onToggleGenre(video.id, genre)}
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-semibold ring-1 ring-white/25 transition hover:opacity-80 ${getGenreStyle(
-                      genre,
-                      customGenres
-                    )}`}
+                    className="inline-flex items-center gap-1 rounded-md border border-zinc-300 bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-950 transition hover:bg-white"
                     title="タップして外す"
                   >
-                    <span>#{genre}</span>
-                    <X className="h-3 w-3 opacity-80" />
+                    <span>{genre}</span>
+                    <X className="h-3 w-3 opacity-75" />
                   </button>
                 ))}
               </div>
@@ -180,7 +174,7 @@ export default function TagEditorModal({
                   onClick={() => onToggleGenre(video.id, cat)}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-xs font-bold transition ${
                     selected
-                      ? `${getGenreStyle(cat, customGenres)} ring-1 ring-white/30`
+                      ? "border-zinc-300 bg-zinc-100 text-zinc-950"
                       : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                   }`}
                 >
@@ -200,7 +194,7 @@ export default function TagEditorModal({
                 value={tagSearch}
                 onChange={(e) => setTagSearch(e.target.value)}
                 placeholder="タグを検索（例: 旅行、家族、作者名、制作会社名...）"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-900 py-2 pl-9 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                className="w-full rounded-xl border border-zinc-800 bg-zinc-900 py-2 pl-9 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none"
               />
               {tagSearch && (
                 <button
@@ -226,7 +220,7 @@ export default function TagEditorModal({
                       onClick={() => setActiveGroup(tab.id)}
                       className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
                         active
-                          ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
+                          ? "border-zinc-600 bg-zinc-800 text-white"
                           : "border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                       }`}
                     >
@@ -256,14 +250,14 @@ export default function TagEditorModal({
                       key={genre}
                       type="button"
                       onClick={() => onToggleGenre(video.id, genre)}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                         selected
-                          ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
+                          ? "border-zinc-300 bg-zinc-100 font-semibold text-zinc-950"
                           : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                       }`}
                     >
                       {selected && <Check className="h-3.5 w-3.5" />}
-                      #{genre}
+                      {genre}
                     </button>
                   );
                 })}
@@ -272,39 +266,23 @@ export default function TagEditorModal({
           </div>
 
           {/* Create new genre */}
-          <form onSubmit={handleSubmitNew} className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3.5">
+          <form onSubmit={handleSubmitNew} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
             <div className="flex gap-2">
               <input
                 type="text"
                 value={newGenre}
                 onChange={(e) => setNewGenre(e.target.value)}
                 placeholder="新しいタグを追加..."
-                className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={!newGenre.trim()}
-                className="inline-flex items-center gap-1 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-white disabled:opacity-40"
               >
                 <Plus className="h-3.5 w-3.5" />
                 作成して追加
               </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-1 text-[11px] text-zinc-500">色:</span>
-              {GENRE_COLOR_OPTIONS.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setSelectedColor(c.id)}
-                  className={`flex h-5 w-5 items-center justify-center rounded-full ${c.dot} transition ${
-                    selectedColor === c.id
-                      ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-zinc-900"
-                      : "opacity-60 hover:opacity-100"
-                  }`}
-                  title={c.label}
-                />
-              ))}
             </div>
           </form>
         </div>

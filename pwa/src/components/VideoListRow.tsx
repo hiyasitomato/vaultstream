@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
-import { Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Sparkles, Tag } from "lucide-react";
+import { Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Tag } from "lucide-react";
 import {
   driveFetchCachedThumbnailUrl,
   formatBytes,
@@ -368,9 +368,9 @@ function VideoListRow({
                   onOpenCrossMediaSet(companion, video);
                 }
               }}
-              className="inline-flex items-center gap-1 rounded border border-amber-400/40 bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-200 transition hover:border-amber-300/70 hover:brightness-125"
+              className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
             >
-              <Sparkles className="h-2.5 w-2.5 text-amber-300" />
+              <Film className="h-2.5 w-2.5 text-zinc-400" />
               <span>
                 {video.kind === "manga"
                   ? `アニメあり (${linkedItems.length}本)`
@@ -383,19 +383,19 @@ function VideoListRow({
               key={genre}
               type="button"
               onClick={() => onClickGenre(genre)}
-              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium transition hover:brightness-125 ${getGenreStyle(
+              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium transition ${getGenreStyle(
                 genre,
                 customGenres
               )}`}
             >
-              #{genre}
+              {genre}
             </button>
           ))}
           {!selectionMode && (
             <button
               type="button"
               onClick={() => onEditTags(video)}
-              className="inline-flex items-center gap-0.5 rounded border border-dashed border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-rose-500/60 hover:text-rose-300"
+              className="inline-flex items-center gap-0.5 rounded border border-dashed border-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
             >
               <Plus className="h-2.5 w-2.5" />
               {getContentGenresOnly(genres).length === 0 ? "ジャンル設定" : ""}

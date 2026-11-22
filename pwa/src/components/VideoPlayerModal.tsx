@@ -3726,12 +3726,12 @@ export default function VideoPlayerModal({
                             key={genre}
                             type="button"
                             onClick={() => setBrowseGenre(genre)}
-                            className={`rounded-md border px-2 py-0.5 text-xs font-medium transition hover:brightness-125 ${getGenreStyle(
+                            className={`rounded-md border px-2 py-0.5 text-xs font-medium transition ${getGenreStyle(
                               genre,
                               customGenres
                             )}`}
                           >
-                            #{genre}
+                            {genre}
                           </button>
                         ))}
                       </div>
@@ -3813,7 +3813,7 @@ export default function VideoPlayerModal({
                                         customGenres
                                       )}`}
                                     >
-                                      #{g}
+                                      {g}
                                     </span>
                                   ))}
                                 </div>
@@ -3949,7 +3949,7 @@ export default function VideoPlayerModal({
                                         customGenres
                                       )}`}
                                     >
-                                      #{g}
+                                      {g}
                                     </span>
                                   ))}
                                 </div>
@@ -4089,7 +4089,7 @@ export default function VideoPlayerModal({
                                           customGenres
                                         )}`}
                                       >
-                                        #{g}
+                                        {g}
                                       </span>
                                     ))}
                                   </div>
@@ -4200,7 +4200,7 @@ export default function VideoPlayerModal({
                                             customGenres
                                           )}`}
                                         >
-                                          #{g}
+                                          {g}
                                         </span>
                                       ))}
                                     </div>

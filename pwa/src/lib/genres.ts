@@ -9,23 +9,27 @@ export interface GenreRule {
 
 export const CATEGORY_TAG_SET = new Set(["現実", "アニメ", "漫画"]);
 
+const NEUTRAL_TAG_CLASSES =
+  "bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100 hover:border-zinc-700";
+
 export const GENRE_COLOR_OPTIONS: Array<{
   id: string;
   label: string;
   classes: string;
   dot: string;
 }> = [
-  { id: "rose", label: "ローズ", classes: "bg-rose-500/15 text-rose-300 border-rose-500/35", dot: "bg-rose-500" },
-  { id: "pink", label: "ピンク", classes: "bg-pink-500/15 text-pink-300 border-pink-500/35", dot: "bg-pink-500" },
-  { id: "fuchsia", label: "フューシャ", classes: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/35", dot: "bg-fuchsia-500" },
-  { id: "purple", label: "パープル", classes: "bg-purple-500/15 text-purple-300 border-purple-500/35", dot: "bg-purple-500" },
-  { id: "indigo", label: "インディゴ", classes: "bg-indigo-500/15 text-indigo-300 border-indigo-500/35", dot: "bg-indigo-500" },
-  { id: "sky", label: "スカイ", classes: "bg-sky-500/15 text-sky-300 border-sky-500/35", dot: "bg-sky-500" },
-  { id: "cyan", label: "シアン", classes: "bg-cyan-500/15 text-cyan-300 border-cyan-500/35", dot: "bg-cyan-500" },
-  { id: "emerald", label: "エメラルド", classes: "bg-emerald-500/15 text-emerald-300 border-emerald-500/35", dot: "bg-emerald-500" },
-  { id: "amber", label: "アンバー", classes: "bg-amber-500/15 text-amber-300 border-amber-500/35", dot: "bg-amber-500" },
-  { id: "orange", label: "オレンジ", classes: "bg-orange-500/15 text-orange-300 border-orange-500/35", dot: "bg-orange-500" },
-  { id: "red", label: "レッド", classes: "bg-red-500/15 text-red-300 border-red-500/35", dot: "bg-red-500" },
+  { id: "zinc", label: "モノクロ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "rose", label: "ローズ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "pink", label: "ピンク", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "fuchsia", label: "フューシャ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "purple", label: "パープル", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "indigo", label: "インディゴ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "sky", label: "スカイ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "cyan", label: "シアン", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "emerald", label: "エメラルド", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "amber", label: "アンバー", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "orange", label: "オレンジ", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
+  { id: "red", label: "レッド", classes: NEUTRAL_TAG_CLASSES, dot: "bg-zinc-400" },
 ];
 
 /**
@@ -36,19 +40,20 @@ export const DEFAULT_CUSTOM_GENRES: CustomGenreDef[] = [];
 export const GENRE_RULES: GenreRule[] = [];
 
 export const DEFAULT_GENRE_STYLE =
-  "bg-zinc-800/90 text-zinc-200 border-zinc-700/80";
+  "bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100 hover:border-zinc-700";
+
+const CREATOR_GENRE_STYLE =
+  "bg-zinc-900/60 text-zinc-400 border-zinc-800/80 hover:bg-zinc-800 hover:text-zinc-200";
 
 export function getGenreStyle(
   genreName: string,
-  customGenres: CustomGenreDef[] = []
+  _customGenres: CustomGenreDef[] = []
 ): string {
-  const custom = customGenres.find((g) => g.name === genreName);
-  if (custom) {
-    const colorObj = GENRE_COLOR_OPTIONS.find((c) => c.id === custom.color);
-    if (colorObj) return colorObj.classes;
+  void _customGenres;
+  if (isCreatorOrStudioGenre(genreName)) {
+    return CREATOR_GENRE_STYLE;
   }
-  const found = GENRE_RULES.find((r) => r.name === genreName);
-  return found?.color ?? DEFAULT_GENRE_STYLE;
+  return DEFAULT_GENRE_STYLE;
 }
 
 export function extractAutoGenres(

@@ -81,7 +81,6 @@ import {
   CATEGORY_TAG_SET,
   DEFAULT_CUSTOM_GENRES,
   extractAutoGenres,
-  GENRE_COLOR_OPTIONS,
   GENRE_GROUP_TABS,
   type GenreGroupId,
   getContentGenresOnly,
@@ -443,7 +442,6 @@ export default function VaultStreamApp() {
 
   // Genre management page form state
   const [newGenreName, setNewGenreName] = useState("");
-  const [newGenreColor, setNewGenreColor] = useState("rose");
   const [renamingGenre, setRenamingGenre] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
 
@@ -3164,7 +3162,7 @@ export default function VaultStreamApp() {
   const handleSubmitNewGenre = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGenreName.trim()) return;
-    handleCreateCustomGenre(newGenreName, newGenreColor);
+    handleCreateCustomGenre(newGenreName, "zinc");
     setNewGenreName("");
   };
 
@@ -3195,7 +3193,7 @@ export default function VaultStreamApp() {
               }}
               className="flex items-center gap-2.5 text-left"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-rose-500 to-fuchsia-600 text-white shadow-lg shadow-rose-600/25">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-100 text-zinc-950">
                 <Film className="h-4 w-4" />
               </div>
               <span className="hidden text-base font-bold tracking-tight text-white sm:inline">
@@ -3226,7 +3224,7 @@ export default function VaultStreamApp() {
                   <button
                     type="button"
                     onClick={() => openExternalUrlModal(searchQuery.trim())}
-                    className="absolute right-9 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 rounded-full bg-rose-600 px-2.5 py-1 text-[10px] font-bold text-white shadow hover:bg-rose-500"
+                    className="absolute right-9 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-1 text-[10px] font-bold text-zinc-950 hover:bg-white"
                     title="外部URLをプレーヤーで開く"
                   >
                     <Globe className="h-3 w-3" />
@@ -3282,10 +3280,10 @@ export default function VaultStreamApp() {
             <button
               type="button"
               onClick={() => openExternalUrlModal()}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-sky-500/40 bg-sky-500/15 px-3 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/25"
+              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
               title="外部動画サイトの URL を貼って再生・ダウンロード・Drive 保存"
             >
-              <Globe className="h-3.5 w-3.5 text-sky-400" />
+              <Globe className="h-3.5 w-3.5 text-zinc-400" />
               <span className="hidden sm:inline">URL再生・DL</span>
             </button>
 
@@ -3293,7 +3291,7 @@ export default function VaultStreamApp() {
               <button
                 type="button"
                 onClick={() => setUploadModalOpen(true)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-full bg-rose-600 px-3 text-xs font-semibold text-white shadow-sm shadow-rose-600/30 transition hover:bg-rose-500"
+                className="inline-flex h-9 items-center gap-1.5 rounded-full bg-zinc-100 px-3 text-xs font-semibold text-zinc-950 transition hover:bg-white"
                 title="スマホ・ブラウザから動画を暗号化アップロード"
               >
                 <Upload className="h-3.5 w-3.5" />
@@ -3305,14 +3303,14 @@ export default function VaultStreamApp() {
               <button
                 type="button"
                 onClick={() => setCacheModalOpen(true)}
-                className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition ${
+                className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition ${
                   cacheBuildState.running
-                    ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200"
-                    : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-emerald-500/50 hover:bg-zinc-800"
+                    ? "border-zinc-500 bg-zinc-800 text-white"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                 }`}
                 title="iPad / 端末内に暗号化キャッシュを作成して爆速表示"
               >
-                <HardDrive className={`h-3.5 w-3.5 ${cacheBuildState.running ? "animate-pulse text-emerald-300" : "text-emerald-400"}`} />
+                <HardDrive className={`h-3.5 w-3.5 ${cacheBuildState.running ? "animate-pulse text-zinc-200" : "text-zinc-400"}`} />
                 <span className="hidden sm:inline">
                   {cacheBuildState.running
                     ? `キャッシュ ${Math.round((cacheBuildState.done / Math.max(1, cacheBuildState.total)) * 100)}%`
@@ -3332,7 +3330,7 @@ export default function VaultStreamApp() {
                 className="inline-flex h-9 items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 disabled:opacity-50"
                 title="Google Drive から最新一覧を取得"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 text-zinc-400 ${loading ? "animate-spin" : ""}`} />
                 <span className="hidden sm:inline">更新</span>
               </button>
             )}
@@ -3341,10 +3339,10 @@ export default function VaultStreamApp() {
               <button
                 type="button"
                 onClick={handleLockVault}
-                className="inline-flex h-9 items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/30 px-3 text-xs font-medium text-emerald-300 transition hover:border-amber-500/40 hover:bg-amber-950/30 hover:text-amber-200"
+                className="inline-flex h-9 items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                 title="Vault をロックする"
               >
-                <Lock className="h-3.5 w-3.5" />
+                <Lock className="h-3.5 w-3.5 text-zinc-400" />
                 <span className="hidden lg:inline">ロック</span>
               </button>
             )}
@@ -3685,14 +3683,14 @@ export default function VaultStreamApp() {
               <button
                 type="button"
                 onClick={() => openExternalUrlModal()}
-                className={`flex w-full items-center rounded-xl text-sky-300 transition hover:bg-sky-500/15 hover:text-sky-200 ${
+                className={`flex w-full items-center rounded-xl text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100 ${
                   sidebarExpanded
                     ? "justify-between px-3 py-2.5 text-sm"
                     : "flex-col justify-center gap-1 px-1 py-2.5 text-[10px]"
                 }`}
               >
                 <span className={`flex items-center ${sidebarExpanded ? "gap-3" : "flex-col gap-1"}`}>
-                  <Globe className="h-5 w-5 text-sky-400" />
+                  <Globe className="h-5 w-5" />
                   <span>URL再生・DL</span>
                 </span>
               </button>
@@ -3708,7 +3706,7 @@ export default function VaultStreamApp() {
                   <button
                     type="button"
                     onClick={() => setNavSection("genres")}
-                    className="text-[11px] text-rose-400 hover:underline"
+                    className="text-[11px] text-zinc-400 hover:text-white hover:underline"
                   >
                     +管理
                   </button>
@@ -3781,11 +3779,11 @@ export default function VaultStreamApp() {
                             }}
                             className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
                               selected
-                                ? "bg-rose-500/15 font-semibold text-rose-300"
+                                ? "bg-zinc-800 font-semibold text-white"
                                 : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
                             }`}
                           >
-                            <span className="truncate">#{genre}</span>
+                            <span className="truncate">{genre}</span>
                             <span className="ml-2 shrink-0 text-[10px] text-zinc-500">{count}</span>
                           </button>
                         );
@@ -3820,10 +3818,10 @@ export default function VaultStreamApp() {
                 <div className="inline-flex items-center rounded-xl border border-zinc-800 bg-zinc-900/90 p-1">
                   {(
                     [
-                      { id: "all", label: "すべて", count: videos.length, activeCls: "bg-white text-zinc-950" },
-                      { id: "現実", label: "現実", count: realVideoCount, activeCls: "bg-sky-500 text-white shadow-sm shadow-sky-500/30" },
-                      { id: "アニメ", label: "アニメ", count: animeVideoCount, activeCls: "bg-fuchsia-500 text-white shadow-sm shadow-fuchsia-500/30" },
-                      { id: "漫画", label: "漫画", count: mangaCount, activeCls: "bg-amber-500 text-zinc-950 shadow-sm shadow-amber-500/30" },
+                      { id: "all", label: "すべて", count: videos.length, activeCls: "bg-zinc-100 text-zinc-950" },
+                      { id: "現実", label: "現実", count: realVideoCount, activeCls: "bg-zinc-100 text-zinc-950" },
+                      { id: "アニメ", label: "アニメ", count: animeVideoCount, activeCls: "bg-zinc-100 text-zinc-950" },
+                      { id: "漫画", label: "漫画", count: mangaCount, activeCls: "bg-zinc-100 text-zinc-950" },
                     ] as const
                   ).map((tab) => {
                     const active = categoryTab === tab.id;
@@ -3878,7 +3876,7 @@ export default function VaultStreamApp() {
                           onClick={() => setHomeGenreGroup(tab.id)}
                           className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
                             active
-                              ? "border-rose-500/50 bg-rose-500/15 text-rose-200"
+                              ? "border-zinc-600 bg-zinc-800 text-white"
                               : "border-zinc-800/80 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                           }`}
                         >
@@ -3908,7 +3906,7 @@ export default function VaultStreamApp() {
                         onClick={() => setGenreMatchMode("AND")}
                         className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
                           genreMatchMode === "AND"
-                            ? "bg-rose-600 text-white"
+                            ? "bg-zinc-100 font-semibold text-zinc-950"
                             : "text-zinc-400 hover:text-zinc-200"
                         }`}
                         title="選択したすべてのタグを含む動画を表示"
@@ -3920,7 +3918,7 @@ export default function VaultStreamApp() {
                         onClick={() => setGenreMatchMode("OR")}
                         className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
                           genreMatchMode === "OR"
-                            ? "bg-rose-600 text-white"
+                            ? "bg-zinc-100 font-semibold text-zinc-950"
                             : "text-zinc-400 hover:text-zinc-200"
                         }`}
                         title="選択したタグのいずれかを含む動画を表示"
@@ -3963,8 +3961,8 @@ export default function VaultStreamApp() {
                       }}
                       className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                         onlyUncategorized
-                          ? "border-amber-500 bg-amber-500/20 text-amber-200"
-                          : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
+                          ? "border-zinc-200 bg-zinc-100 font-semibold text-zinc-950"
+                          : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
                       }`}
                     >
                       <span>未分類</span>
@@ -3981,14 +3979,14 @@ export default function VaultStreamApp() {
                         onClick={() => toggleGenreSelection(genre)}
                         className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                           selected
-                            ? "border-rose-500 bg-rose-600 text-white shadow-sm shadow-rose-600/30"
-                            : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
+                            ? "border-zinc-200 bg-zinc-100 font-semibold text-zinc-950"
+                            : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
                         }`}
                       >
-                        <span>#{genre}</span>
+                        <span>{genre}</span>
                         <span
                           className={`text-[10px] ${
-                            selected ? "text-rose-100" : "text-zinc-500"
+                            selected ? "text-zinc-600" : "text-zinc-500"
                           }`}
                         >
                           {count}
@@ -4007,7 +4005,7 @@ export default function VaultStreamApp() {
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-                      <Sparkles className="h-5 w-5 text-rose-400" />
+                      <Tag className="h-5 w-5 text-zinc-400" />
                       マイジャンル管理＆絞り込み
                     </h2>
                     <p className="mt-1 text-xs text-zinc-400">
@@ -4026,8 +4024,8 @@ export default function VaultStreamApp() {
                     }
                     className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition ${
                       useAutoGenres
-                        ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-200"
-                        : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                        ? "border-zinc-600 bg-zinc-800 text-white"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
                     }`}
                   >
                     <span>自動ジャンル分類: {useAutoGenres ? "ON" : "OFF（手動のみ）"}</span>
@@ -4047,33 +4045,17 @@ export default function VaultStreamApp() {
                       type="text"
                       value={newGenreName}
                       onChange={(e) => setNewGenreName(e.target.value)}
-                      placeholder="ジャンル名を入力（例: お気に入り、コスプレ、素人、アニメ、神回...）"
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                      placeholder="ジャンル名を入力（例: お気に入り、アニメ、シリーズ...）"
+                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none"
                     />
                     <button
                       type="submit"
                       disabled={!newGenreName.trim()}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-40"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-zinc-100 px-5 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-white disabled:opacity-40"
                     >
                       <Plus className="h-4 w-4" />
                       ジャンルを作成
                     </button>
-                  </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-zinc-500">カラー:</span>
-                    {GENRE_COLOR_OPTIONS.map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        onClick={() => setNewGenreColor(c.id)}
-                        className={`flex h-6 w-6 items-center justify-center rounded-full ${c.dot} transition ${
-                          newGenreColor === c.id
-                            ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-zinc-900"
-                            : "opacity-60 hover:opacity-100"
-                        }`}
-                        title={c.label}
-                      />
-                    ))}
                   </div>
                 </form>
 
@@ -4088,19 +4070,19 @@ export default function VaultStreamApp() {
                         type="button"
                         onClick={handleRestoreGenresFromHistory}
                         disabled={restoringHistory}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/25 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white disabled:opacity-50"
                         title="Google Drive に保存されている過去リビジョンから消えたジャンル・お気に入りを統合復元します"
                       >
-                        <RotateCcw className={`h-3.5 w-3.5 ${restoringHistory ? "animate-spin" : ""}`} />
+                        <RotateCcw className={`h-3.5 w-3.5 text-zinc-400 ${restoringHistory ? "animate-spin" : ""}`} />
                         {restoringHistory ? "履歴を照合・復元中..." : "Drive 履歴からジャンルを復元"}
                       </button>
                       <button
                         type="button"
                         onClick={handleAutoEnrichAnimeGenres}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/50 bg-fuchsia-500/15 px-3 py-1.5 text-xs font-semibold text-fuchsia-200 transition hover:bg-fuchsia-500/25"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                         title="アニメ・漫画向けジャンルを追加し、シリーズ引継ぎ＋タイトル解析で自動振り分けします"
                       >
-                        <Sparkles className="h-3.5 w-3.5" />
+                        <Sparkles className="h-3.5 w-3.5 text-zinc-400" />
                         アニメ・漫画ジャンル自動振り分け
                       </button>
                       <button
@@ -4110,9 +4092,9 @@ export default function VaultStreamApp() {
                           setSelectionMode(true);
                           setSelectedVideoIds(new Set());
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                       >
-                        <CheckSquare className="h-3.5 w-3.5" />
+                        <CheckSquare className="h-3.5 w-3.5 text-zinc-400" />
                         ホームで動画を一括振り分けする
                       </button>
                     </div>
@@ -4135,7 +4117,7 @@ export default function VaultStreamApp() {
                               value={manageGenreSearch}
                               onChange={(e) => setManageGenreSearch(e.target.value)}
                               placeholder="ジャンル・作者・制作会社を検索..."
-                              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none"
                             />
                             {manageGenreSearch && (
                               <button
@@ -4153,8 +4135,8 @@ export default function VaultStreamApp() {
                             onClick={() => setHideZeroGenres((prev) => !prev)}
                             className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
                               hideZeroGenres
-                                ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
-                                : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700"
+                                ? "border-zinc-600 bg-zinc-800 text-white"
+                                : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                             }`}
                           >
                             <span>0本のジャンルを隠す</span>
@@ -4173,7 +4155,7 @@ export default function VaultStreamApp() {
                                   onClick={() => setManageGenreGroup(tab.id)}
                                   className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
                                     active
-                                      ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
+                                      ? "border-zinc-600 bg-zinc-800 text-white"
                                       : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                                   }`}
                                 >
@@ -4206,7 +4188,7 @@ export default function VaultStreamApp() {
                                 key={cg.name}
                                 className={`flex items-center justify-between gap-2 rounded-xl border p-3 transition ${
                                   selected
-                                    ? "border-rose-500 bg-rose-500/15"
+                                    ? "border-zinc-400 bg-zinc-800 text-white"
                                     : getGenreStyle(cg.name, customGenres)
                                 }`}
                               >
@@ -4223,11 +4205,11 @@ export default function VaultStreamApp() {
                                       value={renameDraft}
                                       onChange={(e) => setRenameDraft(e.target.value)}
                                       autoFocus
-                                      className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-white focus:border-rose-500 focus:outline-none"
+                                      className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-white focus:border-zinc-500 focus:outline-none"
                                     />
                                     <button
                                       type="submit"
-                                      className="rounded-lg bg-rose-600 p-1.5 text-white"
+                                      className="rounded-lg bg-zinc-100 p-1.5 text-zinc-950"
                                     >
                                       <Check className="h-3.5 w-3.5" />
                                     </button>
@@ -4251,7 +4233,7 @@ export default function VaultStreamApp() {
                                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                                     >
                                       <span className="truncate text-sm font-semibold">
-                                        #{cg.name}
+                                        {cg.name}
                                       </span>
                                       <span className="rounded-full bg-black/40 px-2 py-0.5 font-mono text-[11px]">
                                         {count}本
@@ -4302,7 +4284,7 @@ export default function VaultStreamApp() {
                   continueWatchingVideos.length > 0 && (
                     <section className="mb-7">
                       <div className="mb-3 flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-rose-400" />
+                        <Clock className="h-4 w-4 text-zinc-400" />
                         <h2 className="text-sm font-bold text-white">続きを見る</h2>
                       </div>
                       <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
@@ -4343,7 +4325,7 @@ export default function VaultStreamApp() {
                     <section className="mb-7">
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="h-4 w-4 text-rose-400" />
+                          <Sparkles className="h-4 w-4 text-zinc-400" />
                           <h2 className="text-sm font-bold text-white">
                             あなたへのおすすめ
                             {categoryTab !== "all" ? `（${categoryTab}）` : ""}
@@ -4352,10 +4334,10 @@ export default function VaultStreamApp() {
                         <button
                           type="button"
                           onClick={reshuffleHome}
-                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-rose-500/50 hover:text-white"
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                           title="おすすめの候補を入れ替える"
                         >
-                          <Shuffle className="h-3 w-3 text-rose-400" />
+                          <Shuffle className="h-3 w-3 text-zinc-400" />
                           <span>別の候補</span>
                         </button>
                       </div>
@@ -4366,8 +4348,7 @@ export default function VaultStreamApp() {
                             <div key={`rec-${video.id}`} className="flex w-64 shrink-0 flex-col gap-1.5 sm:w-72">
                               {reason && (
                                 <div className="flex items-center gap-1 px-0.5">
-                                  <span className="inline-flex max-w-full items-center gap-1 truncate rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-200">
-                                    <Sparkles className="h-2.5 w-2.5 shrink-0 text-rose-400" />
+                                  <span className="inline-flex max-w-full items-center truncate rounded-md border border-zinc-800/80 bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
                                     <span className="truncate">{reason}</span>
                                   </span>
                                 </div>
@@ -4409,7 +4390,7 @@ export default function VaultStreamApp() {
                     <section className="mb-7">
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="h-4 w-4 text-amber-400" />
+                          <BookOpen className="h-4 w-4 text-zinc-400" />
                           <h2 className="text-sm font-bold text-white">
                             漫画 × アニメ セット（{crossMedia.sets.length} 作品）
                           </h2>
@@ -4422,7 +4403,7 @@ export default function VaultStreamApp() {
                         {crossMedia.sets.map((set) => (
                           <div
                             key={`set-${set.manga.id}`}
-                            className="flex w-72 shrink-0 flex-col gap-2.5 rounded-2xl border border-amber-400/25 bg-gradient-to-br from-amber-950/35 via-zinc-900/95 to-sky-950/35 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)] sm:w-80"
+                            className="flex w-72 shrink-0 flex-col gap-2.5 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3 sm:w-80"
                           >
                             <div className="flex items-center gap-2">
                               <CrossMediaMiniThumb
@@ -4447,9 +4428,9 @@ export default function VaultStreamApp() {
                               <button
                                 type="button"
                                 onClick={() => handleOpenCrossMediaSet(set.manga, set.videos[0])}
-                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 px-3 py-1.5 text-[11px] font-bold text-zinc-950 shadow-sm transition hover:brightness-110"
+                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-zinc-100 px-3 py-1.5 text-[11px] font-bold text-zinc-950 transition hover:bg-white"
                               >
-                                <Sparkles className="h-3 w-3" />
+                                <Play className="h-3 w-3 fill-current" />
                                 <span>同時に開く</span>
                               </button>
                               <button
@@ -4491,9 +4472,9 @@ export default function VaultStreamApp() {
                         key={`sel-${genre}`}
                         type="button"
                         onClick={() => toggleGenreSelection(genre)}
-                        className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2.5 py-0.5 text-xs font-medium text-rose-200 hover:bg-rose-500/25"
+                        className="inline-flex items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-2.5 py-0.5 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
                       >
-                        #{genre}
+                        {genre}
                         <X className="h-3 w-3" />
                       </button>
                     ))}
@@ -4505,10 +4486,10 @@ export default function VaultStreamApp() {
                       <button
                         type="button"
                         onClick={() => handlePlayAllFiltered(filteredVideos)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/25"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                         title="表示中の動画をすべてキューに入れて連続再生"
                       >
-                        <Play className="h-3.5 w-3.5 fill-current" />
+                        <Play className="h-3.5 w-3.5 fill-current text-zinc-400" />
                         <span>すべて連続再生</span>
                       </button>
                     )}
@@ -4523,10 +4504,10 @@ export default function VaultStreamApp() {
                           return next;
                         });
                       }}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                         selectionMode
-                          ? "border-rose-500 bg-rose-600 text-white"
-                          : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-rose-500/50 hover:bg-zinc-800"
+                          ? "border-zinc-200 bg-zinc-100 font-semibold text-zinc-950"
+                          : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                       }`}
                     >
                       <CheckSquare className="h-3.5 w-3.5" />
@@ -4539,10 +4520,10 @@ export default function VaultStreamApp() {
                         setSortMode("random");
                         reshuffleHome();
                       }}
-                      className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-rose-500/50 hover:bg-zinc-800 hover:text-white"
+                      className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
                       title="並びを新しくシャッフル"
                     >
-                      <Shuffle className="h-3.5 w-3.5 text-rose-400" />
+                      <Shuffle className="h-3.5 w-3.5 text-zinc-400" />
                       <span>シャッフル</span>
                     </button>
 
@@ -4737,10 +4718,10 @@ export default function VaultStreamApp() {
 
       {/* Floating Bulk Genre Assignment Bar */}
       {accessToken && selectionMode && (
-        <div className="fixed bottom-16 left-3 right-3 z-40 mx-auto max-w-4xl rounded-2xl border border-rose-500/40 bg-zinc-950/95 p-3.5 shadow-2xl shadow-black/80 backdrop-blur-xl md:bottom-5">
+        <div className="fixed bottom-16 left-3 right-3 z-40 mx-auto max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-950/95 p-3.5 shadow-2xl shadow-black/80 backdrop-blur-xl md:bottom-5">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5">
             <div className="flex items-center gap-2 text-xs">
-              <span className="rounded-full bg-rose-600 px-2.5 py-0.5 font-bold text-white">
+              <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 font-bold text-zinc-950">
                 {selectedVideoIds.size} 本選択中
               </span>
               <button
@@ -4763,9 +4744,9 @@ export default function VaultStreamApp() {
                 type="button"
                 disabled={selectedVideoIds.size === 0}
                 onClick={handleBulkAddToQueue}
-                className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2.5 py-1 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/25 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 disabled:opacity-40"
               >
-                <ListPlus className="h-3.5 w-3.5" />
+                <ListPlus className="h-3.5 w-3.5 text-zinc-400" />
                 キューに追加
               </button>
             </div>
@@ -4794,7 +4775,7 @@ export default function VaultStreamApp() {
                       onClick={() => setBulkGenreGroup(tab.id)}
                       className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
                         active
-                          ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
+                          ? "border-zinc-600 bg-zinc-800 text-white"
                           : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                       }`}
                     >
@@ -4815,7 +4796,7 @@ export default function VaultStreamApp() {
                 value={bulkGenreSearch}
                 onChange={(e) => setBulkGenreSearch(e.target.value)}
                 placeholder="タグ検索..."
-                className="w-32 rounded-lg border border-zinc-800 bg-zinc-900 py-1 pl-6 pr-6 text-[11px] text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none sm:w-40"
+                className="w-32 rounded-lg border border-zinc-800 bg-zinc-900 py-1 pl-6 pr-6 text-[11px] text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none sm:w-40"
               />
               {bulkGenreSearch && (
                 <button
@@ -4841,12 +4822,12 @@ export default function VaultStreamApp() {
                 type="button"
                 disabled={selectedVideoIds.size === 0}
                 onClick={() => handleBulkAssignGenre(cg.name, "add", cg.color)}
-                className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition hover:brightness-125 disabled:opacity-40 ${getGenreStyle(
+                className={`rounded-md border px-2.5 py-1 text-xs font-medium transition disabled:opacity-40 ${getGenreStyle(
                   cg.name,
                   customGenres
                 )}`}
               >
-                + #{cg.name}
+                + {cg.name}
               </button>
             ))}
 
@@ -4854,7 +4835,7 @@ export default function VaultStreamApp() {
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!bulkNewGenreName.trim()) return;
-                handleBulkAssignGenre(bulkNewGenreName, "add", "rose");
+                handleBulkAssignGenre(bulkNewGenreName, "add", "zinc");
                 setBulkNewGenreName("");
               }}
               className="ml-auto flex items-center gap-1.5"
@@ -4864,12 +4845,12 @@ export default function VaultStreamApp() {
                 value={bulkNewGenreName}
                 onChange={(e) => setBulkNewGenreName(e.target.value)}
                 placeholder="新規ジャンルで追加..."
-                className="w-36 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none sm:w-44"
+                className="w-36 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:border-zinc-600 focus:outline-none sm:w-44"
               />
               <button
                 type="submit"
                 disabled={!bulkNewGenreName.trim() || selectedVideoIds.size === 0}
-                className="rounded-lg bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-40"
+                className="rounded-lg bg-zinc-100 px-2.5 py-1 text-xs font-semibold text-zinc-950 hover:bg-white disabled:opacity-40"
               >
                 適用
               </button>
