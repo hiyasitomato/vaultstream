@@ -53,7 +53,9 @@ import {
   getSyncCachedThumbnailUrl,
   inspectVaultRoot,
   isValidClientId,
+  listUserMetaRevisions,
   loadSyncedUserDataFromDrive,
+  loadUserMetaRevisionFromDrive,
   requestGoogleAccessToken,
   revokeGoogleAccessToken,
   saveSyncedUserDataToDrive,
@@ -250,6 +252,7 @@ export default function VaultStreamApp() {
     folder: string;
   }>({ token: null, key: null, folder: "" });
   const [syncStatus, setSyncStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [restoringHistory, setRestoringHistory] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -1063,6 +1066,160 @@ export default function VaultStreamApp() {
     });
     showQueueToast("定番ジャンル一覧を追加しました！");
   }, [updateUserData, showQueueToast]);
+
+  // 1-click lossless recovery from Google Drive's encrypted user_meta.enc revision history!
+  const handleRestoreGenresFromHistory = useCallback(async () => {
+    if (!accessToken || !syncFileIdRef.current || restoringHistory) return;
+    setRestoringHistory(true);
+    try {
+      const fileId = syncFileIdRef.current;
+      const revisions = await listUserMetaRevisions(fileId, accessToken);
+      if (revisions.length === 0) {
+        showQueueToast("Drive に過去の履歴が見つかりませんでした");
+        return;
+      }
+
+      // Pick the top 4 largest past revisions (captures the peak snapshot before any overwrite!)
+      const sortedBySize = [...revisions]
+        .filter((r) => Number(r.size || 0) > 0)
+        .sort((a, b) => Number(b.size || 0) - Number(a.size || 0));
+      const topRevs = sortedBySize.slice(0, 4);
+
+      const snapshots = (
+        await Promise.all(
+          topRevs.map((r) =>
+            loadUserMetaRevisionFromDrive(fileId, r.id, accessToken, masterKey)
+          )
+        )
+      ).filter((s): s is SyncedVaultUserData => Boolean(s && s.videoMeta));
+
+      if (snapshots.length === 0) {
+        showQueueToast("過去の履歴を復号できませんでした");
+        return;
+      }
+
+      const latestRemote = await loadSyncedUserDataFromDrive(
+        fileId,
+        accessToken,
+        masterKey
+      ).catch(() => null);
+      const baseCur = latestRemote
+        ? mergeSyncedUserData(userData, latestRemote)
+        : userData;
+
+      const now = Date.now();
+      const customByName = new Map<string, CustomGenreDef>();
+      for (const cg of baseCur.customGenres ?? []) {
+        if (cg.name) customByName.set(cg.name, cg);
+      }
+      for (const snap of snapshots) {
+        for (const cg of snap.customGenres ?? []) {
+          if (cg.name && !customByName.has(cg.name)) {
+            customByName.set(cg.name, cg);
+          }
+        }
+      }
+
+      const restoredMeta: Record<string, VideoUserMeta> = {};
+      const allVids = new Set<string>(Object.keys(baseCur.videoMeta ?? {}));
+      for (const snap of snapshots) {
+        for (const vid of Object.keys(snap.videoMeta ?? {})) {
+          allVids.add(vid);
+        }
+      }
+
+      let recoveredVideoCount = 0;
+      let recoveredTagCount = 0;
+      let mergedProgress = baseCur.progress ?? {};
+
+      for (const snap of snapshots) {
+        mergedProgress = mergeProgressMaps(mergedProgress, snap.progress);
+      }
+
+      for (const vid of allVids) {
+        const curM = baseCur.videoMeta?.[vid];
+        const curAdded = new Set<string>(curM?.addedGenres ?? []);
+        const unionAdded = new Set<string>(curAdded);
+        let fav = Boolean(curM?.favorite);
+        let thumbSec = curM?.thumbnailTimeSec;
+        let thumbStamp = curM?.thumbnailUpdatedAt;
+
+        for (const snap of snapshots) {
+          const oldM = snap.videoMeta?.[vid];
+          if (!oldM) continue;
+          for (const g of oldM.addedGenres ?? []) {
+            if (g && g.trim()) unionAdded.add(g.trim());
+          }
+          if (oldM.favorite) fav = true;
+          if (thumbSec === undefined && oldM.thumbnailTimeSec !== undefined) {
+            thumbSec = oldM.thumbnailTimeSec;
+          }
+          if (!thumbStamp && oldM.thumbnailUpdatedAt) {
+            thumbStamp = oldM.thumbnailUpdatedAt;
+          }
+        }
+
+        const addedDelta = unionAdded.size - curAdded.size;
+        const favRestored = fav && !curM?.favorite;
+        if (addedDelta > 0 || favRestored) {
+          recoveredVideoCount += 1;
+          recoveredTagCount += Math.max(0, addedDelta);
+        }
+
+        const keptRemoved = (curM?.removedGenres ?? []).filter((g) => !unionAdded.has(g));
+        restoredMeta[vid] = {
+          ...(curM ?? {}),
+          favorite: fav || undefined,
+          addedGenres: Array.from(unionAdded),
+          removedGenres: keptRemoved,
+          thumbnailTimeSec: thumbSec,
+          thumbnailUpdatedAt: thumbStamp,
+          updatedAt: addedDelta > 0 || favRestored ? now : (curM?.updatedAt ?? now),
+        };
+      }
+
+      const finalRestored: SyncedVaultUserData = {
+        version: 1,
+        updatedAt: now,
+        customGenresUpdatedAt: now,
+        useAutoGenres: baseCur.useAutoGenres,
+        customGenres: Array.from(customByName.values()),
+        videoMeta: restoredMeta,
+        progress: mergedProgress,
+      };
+
+      setUserData(finalRestored);
+      saveLocalUserData(finalRestored);
+      setProgressMap(mergedProgress);
+      saveAllProgress(mergedProgress);
+
+      const savedId = await saveSyncedUserDataToDrive(
+        folderId.trim(),
+        accessToken,
+        masterKey,
+        finalRestored,
+        fileId
+      );
+      syncFileIdRef.current = savedId;
+      setSyncStatus("saved");
+
+      if (recoveredVideoCount > 0) {
+        showQueueToast(
+          `履歴から復元しました！（${recoveredVideoCount}本の動画・計${recoveredTagCount}件のジャンルを復旧）`
+        );
+      } else {
+        showQueueToast("最新の履歴と照合済みです（不足しているジャンルはありませんでした）");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === "AUTH_EXPIRED") {
+        handleAuthExpired();
+        return;
+      }
+      showQueueToast("履歴からの復元に失敗しました（もう一度お試しください）");
+    } finally {
+      setRestoringHistory(false);
+    }
+  }, [accessToken, masterKey, folderId, userData, restoringHistory, showQueueToast, handleAuthExpired]);
 
   const handleRenameCustomGenre = useCallback(
     (oldName: string, newNameRaw: string) => {
@@ -2335,6 +2492,16 @@ export default function VaultStreamApp() {
                       作成済みマイジャンル ({customGenres.length})
                     </h3>
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRestoreGenresFromHistory}
+                        disabled={restoringHistory}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/25 disabled:opacity-50"
+                        title="Google Drive に保存されている過去リビジョンから消えたジャンル・お気に入りを統合復元します"
+                      >
+                        <RotateCcw className={`h-3.5 w-3.5 ${restoringHistory ? "animate-spin" : ""}`} />
+                        {restoringHistory ? "履歴を照合・復元中..." : "Drive 履歴からジャンルを復元"}
+                      </button>
                       {DEFAULT_CUSTOM_GENRES.length > 0 && (
                         <button
                           type="button"
@@ -3094,6 +3261,22 @@ export default function VaultStreamApp() {
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
                 />
               </div>
+              {accessToken && (
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3.5">
+                  <p className="mb-2 text-xs font-semibold text-emerald-200">
+                    ジャンル・お気に入りの履歴復元（Google Drive リビジョン）
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleRestoreGenresFromHistory}
+                    disabled={restoringHistory}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-600/25 px-3 py-1.5 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-600/40 disabled:opacity-50"
+                  >
+                    <RotateCcw className={`h-3.5 w-3.5 ${restoringHistory ? "animate-spin" : ""}`} />
+                    {restoringHistory ? "復元中..." : "過去の履歴からジャンルを復元・統合する"}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="mt-6 flex justify-end gap-2">

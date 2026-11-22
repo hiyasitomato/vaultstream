@@ -849,6 +849,69 @@ export async function loadSyncedUserDataFromDrive(
   }
 }
 
+export interface DriveRevisionInfo {
+  id: string;
+  modifiedTime?: string;
+  size?: string;
+}
+
+export async function listUserMetaRevisions(
+  syncFileId: string | null,
+  accessToken: string
+): Promise<DriveRevisionInfo[]> {
+  if (!syncFileId) return [];
+  const all: DriveRevisionInfo[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      fields: "nextPageToken,revisions(id,modifiedTime,size)",
+      pageSize: "200",
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+    const data = await driveFetchJson<{
+      revisions?: DriveRevisionInfo[];
+      nextPageToken?: string;
+    }>(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(syncFileId)}/revisions?${params.toString()}`,
+      accessToken
+    );
+    if (data.revisions) all.push(...data.revisions);
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return all;
+}
+
+export async function loadUserMetaRevisionFromDrive(
+  syncFileId: string,
+  revisionId: string,
+  accessToken: string,
+  masterKey: CryptoKey | null
+): Promise<SyncedVaultUserData | null> {
+  try {
+    const url = `${DRIVE_API_BASE}/files/${encodeURIComponent(syncFileId)}/revisions/${encodeURIComponent(revisionId)}?alt=media`;
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (response.status === 401) {
+      throw new Error("AUTH_EXPIRED");
+    }
+    if (!response.ok) return null;
+    const rawBytes = new Uint8Array(await response.arrayBuffer());
+    const jsonText = masterKey
+      ? await decryptAesGcmText(rawBytes, masterKey)
+      : new TextDecoder("utf-8").decode(rawBytes);
+    return JSON.parse(jsonText) as SyncedVaultUserData;
+  } catch (err) {
+    if (err instanceof Error && err.message === "AUTH_EXPIRED") {
+      throw err;
+    }
+    return null;
+  }
+}
+
 export async function saveSyncedUserDataToDrive(
   rootFolderId: string,
   accessToken: string,
