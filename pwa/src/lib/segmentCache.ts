@@ -7,9 +7,14 @@ import Hls, {
   type LoaderContext,
   type LoaderStats,
 } from "hls.js";
+import {
+  getCachedSegmentBytes,
+  hasCachedSegmentKey,
+  putCachedSegmentBytes,
+} from "./thumbDb";
 
-const MAX_CACHED_SEGMENTS = 240;
-const MAX_CACHE_BYTES = 512 * 1024 * 1024; // 512 MB LRU cache (fits an entire HD video in memory)
+const MAX_CACHED_SEGMENTS = 360;
+const MAX_CACHE_BYTES = 512 * 1024 * 1024; // 512 MB L1 RAM LRU cache (paired with multi-GB L2 IndexedDB SSD cache)
 
 interface CachedSegmentEntry {
   data: ArrayBuffer;
@@ -93,7 +98,8 @@ export function clearSegmentCache(): void {
 export function prefetchSegmentUrl(
   url: string,
   accessToken: string,
-  priority: "low" | "high" = "low"
+  priority: "low" | "high" = "low",
+  persistToDisk = true
 ): Promise<ArrayBuffer> | null {
   if (!url || !accessToken) return null;
   const cached = getSegmentCache(url);
@@ -103,31 +109,75 @@ export function prefetchSegmentUrl(
   if (existing) return existing.promise;
 
   const controller = new AbortController();
-  const promise = fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    signal: controller.signal,
-    priority,
-  } as RequestInit)
-    .then(async (res) => {
-      if (!res.ok) {
-        throw new Error(`Prefetch HTTP ${res.status}`);
-      }
-      const buf = await res.arrayBuffer();
-      putSegmentCache(url, buf);
-      return buf;
-    })
-    .finally(() => {
-      const cur = inFlightPrefetches.get(url);
-      if (cur && cur.controller === controller) {
-        inFlightPrefetches.delete(url);
-      }
-    });
+  const promise = (async () => {
+    // Check persistent iPad IndexedDB cache first (0ms network!)
+    const diskHit = await getCachedSegmentBytes(url);
+    if (diskHit) {
+      putSegmentCache(url, diskHit);
+      return diskHit;
+    }
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      signal: controller.signal,
+      priority,
+    } as RequestInit);
+    if (!res.ok) {
+      throw new Error(`Prefetch HTTP ${res.status}`);
+    }
+    const buf = await res.arrayBuffer();
+    putSegmentCache(url, buf);
+    if (persistToDisk) {
+      putCachedSegmentBytes(url, buf).catch(() => undefined);
+    }
+    return buf;
+  })().finally(() => {
+    const cur = inFlightPrefetches.get(url);
+    if (cur && cur.controller === controller) {
+      inFlightPrefetches.delete(url);
+    }
+  });
 
   promise.catch(() => undefined);
   inFlightPrefetches.set(url, { promise, controller, priority });
   return promise;
+}
+
+/**
+ * Bulk background disk-only cache warmer (used by the iPad Cache Builder).
+ * Skips already-cached segments in <0.5ms without touching L1 RAM, allowing 3GB-12GB
+ * preloading on iPadOS with near-zero memory usage!
+ */
+export async function cacheSegmentToDiskOnly(
+  url: string,
+  accessToken: string
+): Promise<number> {
+  if (!url || !accessToken) return 0;
+
+  if (await hasCachedSegmentKey(url)) {
+    return 0;
+  }
+
+  const ramHit = getSegmentCache(url);
+  if (ramHit) {
+    await putCachedSegmentBytes(url, ramHit);
+    return ramHit.byteLength;
+  }
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    priority: "low",
+  } as RequestInit);
+  if (!res.ok) {
+    throw new Error(`DiskCache HTTP ${res.status}`);
+  }
+  const buf = await res.arrayBuffer();
+  await putCachedSegmentBytes(url, buf);
+  return buf.byteLength;
 }
 
 /**
@@ -192,7 +242,7 @@ export function createCachedDriveFragmentLoader(
         );
       };
 
-      // 1. Instant 0ms hit from LRU cache
+      // 1. Instant 0ms hit from L1 RAM cache
       const cached = getSegmentCache(url);
       if (cached) {
         queueMicrotask(() => deliverBuffer(cached));
@@ -213,9 +263,25 @@ export function createCachedDriveFragmentLoader(
         return;
       }
 
-      // 3. Free all bandwidth for this active segment
-      abortLowPriorityPrefetches(url);
-      this.loadWithCacheHook(context, config, callbacks);
+      // 3. Check persistent L2 iPad IndexedDB cache (~2ms, survives app restarts!) before hitting Google Drive
+      getCachedSegmentBytes(url)
+        .then((diskBuf) => {
+          if (this.isAborted) return;
+          if (diskBuf) {
+            putSegmentCache(url, diskBuf);
+            deliverBuffer(diskBuf);
+            return;
+          }
+          // 4. Cache miss -> free bandwidth and fetch from Google Drive
+          abortLowPriorityPrefetches(url);
+          this.loadWithCacheHook(context, config, callbacks);
+        })
+        .catch(() => {
+          if (!this.isAborted) {
+            abortLowPriorityPrefetches(url);
+            this.loadWithCacheHook(context, config, callbacks);
+          }
+        });
     }
 
     private loadWithCacheHook(
@@ -237,7 +303,10 @@ export function createCachedDriveFragmentLoader(
         onSuccess: (response, stats, ctx, networkDetails) => {
           release();
           if (response.data instanceof ArrayBuffer) {
-            putSegmentCache(ctx.url, response.data.slice(0));
+            const copy = response.data.slice(0);
+            putSegmentCache(ctx.url, copy);
+            // Persist encrypted segment to iPad IndexedDB for instant replay on future launches!
+            putCachedSegmentBytes(ctx.url, copy).catch(() => undefined);
           }
           callbacks.onSuccess(response, stats, ctx, networkDetails);
         },

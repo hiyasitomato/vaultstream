@@ -7,9 +7,12 @@ import {
 } from "./crypto";
 import {
   clearAllThumbDbCache,
+  getCachedPlaylistBytes,
   getCachedThumbBytes,
+  putCachedPlaylistBytes,
   putCachedThumbBytes,
 } from "./thumbDb";
+import { prefetchSegmentUrl } from "./segmentCache";
 import type {
   DriveFileEntry,
   SyncedVaultUserData,
@@ -255,6 +258,22 @@ function releaseThumbSlot(): void {
 
 const thumbCache = new Map<string, Promise<string>>();
 const thumbResolvedUrls = new Map<string, string>();
+const spriteGridCache = new Map<string, { cols: number; rows: number }>();
+
+export const EMPTY_STRING_ARRAY: string[] = [];
+
+export function getCachedSpriteGrid(
+  spriteUrl: string
+): { cols: number; rows: number } | null {
+  return spriteGridCache.get(spriteUrl) ?? null;
+}
+
+export function setCachedSpriteGrid(
+  spriteUrl: string,
+  grid: { cols: number; rows: number }
+): void {
+  spriteGridCache.set(spriteUrl, grid);
+}
 
 function makeThumbCacheKey(fileId: string, encrypted: boolean, modifiedTime?: string): string {
   return `${fileId}:${encrypted ? "enc" : "raw"}:${modifiedTime ?? ""}`;
@@ -612,6 +631,94 @@ export async function createDriveFolder(
   }
   const data = (await response.json()) as { id: string };
   return data.id;
+}
+
+/**
+ * Finds an existing VaultStream root folder (by name or containing vault.json/library_index.enc)
+ * or automatically creates a fresh private "VaultStream-Vault" folder in Google Drive root.
+ */
+export async function findOrCreateRootVaultFolder(
+  accessToken: string,
+  preferredName = "VaultStream-Vault"
+): Promise<{ id: string; name: string; created: boolean }> {
+  const folderQuery = encodeURIComponent(
+    "mimeType = 'application/vnd.google-apps.folder' and trashed = false and (name = 'VaultStream-Vault' or name = 'VaultStream')"
+  );
+  const folderRes = await fetch(
+    `${DRIVE_API_BASE}/files?q=${folderQuery}&orderBy=modifiedTime+desc&pageSize=10&fields=files(id,name,parents)`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (folderRes.status === 401) throw new Error("AUTH_EXPIRED");
+  if (folderRes.ok) {
+    const folderJson = (await folderRes.json()) as {
+      files?: Array<{ id: string; name: string; parents?: string[] }>;
+    };
+    const found = folderJson.files ?? [];
+    if (found.length > 0) {
+      const preferred =
+        found.find((f) => f.name === preferredName) ?? found[0];
+      return { id: preferred.id, name: preferred.name, created: false };
+    }
+  }
+
+  const markerQuery = encodeURIComponent(
+    "(name = 'vault.json' or name = 'library_index.enc') and trashed = false"
+  );
+  const markerRes = await fetch(
+    `${DRIVE_API_BASE}/files?q=${markerQuery}&orderBy=modifiedTime+desc&pageSize=10&fields=files(id,parents)`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (markerRes.status === 401) throw new Error("AUTH_EXPIRED");
+  if (markerRes.ok) {
+    const markerJson = (await markerRes.json()) as {
+      files?: Array<{ id: string; parents?: string[] }>;
+    };
+    for (const file of markerJson.files ?? []) {
+      const parentId = file.parents?.[0];
+      if (!parentId) continue;
+      const metaRes = await fetch(
+        `${DRIVE_API_BASE}/files/${encodeURIComponent(parentId)}?fields=id,name,trashed`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (metaRes.status === 401) throw new Error("AUTH_EXPIRED");
+      if (metaRes.ok) {
+        const meta = (await metaRes.json()) as {
+          id: string;
+          name?: string;
+          trashed?: boolean;
+        };
+        if (!meta.trashed) {
+          return {
+            id: meta.id,
+            name: meta.name || preferredName,
+            created: false,
+          };
+        }
+      }
+    }
+  }
+
+  const createRes = await fetch(`${DRIVE_API_BASE}/files?fields=id,name`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify({
+      name: preferredName,
+      mimeType: "application/vnd.google-apps.folder",
+    }),
+  });
+  if (createRes.status === 401) throw new Error("AUTH_EXPIRED");
+  if (!createRes.ok) {
+    throw new Error(`Vault フォルダの自動作成に失敗しました (${createRes.status})`);
+  }
+  const created = (await createRes.json()) as { id: string; name?: string };
+  return {
+    id: created.id,
+    name: created.name || preferredName,
+    created: true,
+  };
 }
 
 export async function saveVaultConfigToDrive(
@@ -1228,26 +1335,160 @@ export function getSegmentUrlForTime(
 // In-memory decrypted playlist text cache for instant replay / next-video prefetch
 const playlistTextCache = new Map<string, Promise<string>>();
 
+export function getOpeningSegmentUrls(
+  manifest: VaultManifest | undefined,
+  count = 1
+): string[] {
+  if (!manifest || count <= 0) return [];
+  const segMap =
+    manifest.variants && manifest.variants.length > 0
+      ? manifest.variants[0].segments
+      : manifest.segments;
+  if (!segMap) return [];
+  const names = Object.keys(segMap).sort();
+  return names
+    .slice(0, count)
+    .map((n) => segMap[n])
+    .filter(Boolean)
+    .map((fid) => buildDriveMediaUrl(fid));
+}
+
+export function getCacheSegmentUrls(
+  manifest: VaultManifest | undefined,
+  durationSec: number,
+  startTimeSec = 0,
+  lowCount = 2,
+  highCount = 1
+): string[] {
+  if (!manifest) return [];
+  const urls: string[] = [];
+  const seen = new Set<string>();
+
+  const collectFromMap = (
+    segMap: Record<string, string> | undefined,
+    count: number
+  ) => {
+    if (!segMap || count <= 0) return;
+    const names = Object.keys(segMap).sort();
+    if (names.length === 0) return;
+
+    let startIndex = 0;
+    if (startTimeSec > 3 && durationSec > 0) {
+      const ratio = Math.min(0.99, Math.max(0, startTimeSec / durationSec));
+      startIndex = Math.max(
+        0,
+        Math.min(names.length - 1, Math.floor(ratio * names.length))
+      );
+    }
+
+    // Always prioritize the startIndex forward, plus opening segment 0 if resuming mid-video
+    const pickedIndices: number[] = [];
+    for (let i = startIndex; i < Math.min(names.length, startIndex + count); i += 1) {
+      pickedIndices.push(i);
+    }
+    if (startIndex > 0) {
+      pickedIndices.push(0);
+    }
+
+    for (const idx of pickedIndices) {
+      const fid = segMap[names[idx]];
+      if (!fid) continue;
+      const url = buildDriveMediaUrl(fid);
+      if (!seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    }
+  };
+
+  // Low-bitrate (360p) segments for 0ms instant start & smooth scrub preview
+  if (manifest.variants && manifest.variants.length > 0) {
+    collectFromMap(manifest.variants[0].segments, lowCount);
+  }
+  // Original / HD segments for instant crisp playback
+  collectFromMap(manifest.segments, highCount);
+
+  return urls;
+}
+
 export function prefetchHlsPlaylist(
   manifest: VaultManifest,
   accessToken: string,
   masterKey: CryptoKey | null = null
 ): void {
-  const key = manifest.playlistFileId;
-  if (!key) return;
-  if (playlistTextCache.has(key)) return;
-  const promise = (async () => {
-    if (manifest.encrypted) {
-      if (!masterKey) throw new Error("NO_KEY");
-      const encBytes = await driveFetchBytes(key, accessToken);
-      return decryptAesGcmText(encBytes, masterKey);
+  const ids: string[] = [];
+  if (manifest.playlistFileId) ids.push(manifest.playlistFileId);
+  if (manifest.variants) {
+    for (const v of manifest.variants) {
+      if (v.playlistFileId) ids.push(v.playlistFileId);
     }
-    return driveFetchText(key, accessToken);
-  })().catch((err) => {
-    playlistTextCache.delete(key);
-    throw err;
-  });
-  playlistTextCache.set(key, promise);
+  }
+  for (const pid of ids) {
+    fetchDecryptedPlaylistText(pid, Boolean(manifest.encrypted), accessToken, masterKey).catch(
+      () => undefined
+    );
+  }
+}
+
+export function prewarmVideoForInstantPlay(
+  video: VaultVideoItem,
+  accessToken: string,
+  masterKey: CryptoKey | null,
+  resumeTimeSec = 0,
+  priority: "high" | "low" = "high"
+): void {
+  if (!accessToken) return;
+  if (video.kind === "manga") {
+    const pages = video.manifest?.pages ?? [];
+    if (pages.length === 0) return;
+    const startPageIdx =
+      resumeTimeSec >= 1
+        ? Math.min(pages.length - 1, Math.max(0, Math.floor(resumeTimeSec) - 1))
+        : 0;
+    for (let i = startPageIdx; i < Math.min(pages.length, startPageIdx + 3); i += 1) {
+      const p = pages[i];
+      if (!p?.fileId) continue;
+      driveFetchMangaPageUrl(
+        p.fileId,
+        accessToken,
+        Boolean(video.encrypted),
+        masterKey,
+        p.mimeType || "image/jpeg",
+        priority
+      ).catch(() => undefined);
+    }
+    return;
+  }
+
+  if (video.kind === "hls" && video.manifest) {
+    prefetchHlsPlaylist(video.manifest, accessToken, masterKey);
+    const hasLowVariant = Boolean(video.manifest.variants && video.manifest.variants.length > 0);
+    if (hasLowVariant) {
+      const lowUrl = getCacheSegmentUrls(video.manifest, video.duration, resumeTimeSec, 1, 0)[0];
+      const hdUrl = getCacheSegmentUrls(video.manifest, video.duration, resumeTimeSec, 0, 1)[0];
+      if (lowUrl) {
+        prefetchSegmentUrl(lowUrl, accessToken, priority, true);
+      }
+      if (priority === "high" && hdUrl && hdUrl !== lowUrl) {
+        prefetchSegmentUrl(hdUrl, accessToken, "low", true);
+      }
+    } else {
+      const segUrl = getCacheSegmentUrls(video.manifest, video.duration, resumeTimeSec, 0, 1)[0];
+      if (segUrl) {
+        prefetchSegmentUrl(segUrl, accessToken, priority, true);
+      }
+    }
+    if (video.spriteFileId && priority === "high") {
+      driveFetchCachedThumbnailUrl(
+        video.spriteFileId,
+        accessToken,
+        Boolean(video.encrypted),
+        masterKey,
+        undefined,
+        "low"
+      ).catch(() => undefined);
+    }
+  }
 }
 
 export interface SegmentTimelineEntry {
@@ -1265,7 +1506,7 @@ export interface BuiltHlsSource {
   qualityLabels: string[];
 }
 
-async function fetchDecryptedPlaylistText(
+export async function fetchDecryptedPlaylistText(
   playlistFileId: string,
   encrypted: boolean,
   accessToken: string,
@@ -1276,12 +1517,17 @@ async function fetchDecryptedPlaylistText(
     return existing;
   }
   const promise = (async () => {
+    // L2: Persistent iPad/browser IndexedDB encrypted playlist cache (0ms network!)
+    let rawBytes = await getCachedPlaylistBytes(playlistFileId);
+    if (!rawBytes) {
+      rawBytes = await driveFetchBytes(playlistFileId, accessToken);
+      putCachedPlaylistBytes(playlistFileId, rawBytes).catch(() => undefined);
+    }
     if (encrypted) {
       if (!masterKey) throw new Error("Vault のロックを解除してください");
-      const encBytes = await driveFetchBytes(playlistFileId, accessToken);
-      return decryptAesGcmText(encBytes, masterKey);
+      return decryptAesGcmText(rawBytes, masterKey);
     }
-    return driveFetchText(playlistFileId, accessToken);
+    return new TextDecoder("utf-8").decode(rawBytes);
   })().catch((err) => {
     playlistTextCache.delete(playlistFileId);
     throw err;

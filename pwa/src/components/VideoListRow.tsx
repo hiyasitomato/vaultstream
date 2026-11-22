@@ -1,15 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Sparkles, Tag } from "lucide-react";
 import {
   driveFetchCachedThumbnailUrl,
   formatBytes,
   formatDuration,
   getSyncCachedThumbnailUrl,
+  prewarmVideoForInstantPlay,
 } from "@/lib/drive";
 import { getContentGenresOnly, getGenreStyle } from "@/lib/genres";
 import type { CustomGenreDef, PlaybackProgress, VaultVideoItem } from "@/lib/types";
+
+const ROW_DATE_FORMATTER = new Intl.DateTimeFormat("ja-JP", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 interface VideoListRowProps {
   video: VaultVideoItem;
@@ -34,7 +41,7 @@ interface VideoListRowProps {
   onClickGenre: (genre: string) => void;
 }
 
-export default function VideoListRow({
+function VideoListRow({
   video,
   accessToken,
   masterKey,
@@ -161,11 +168,8 @@ export default function VideoListRow({
 
   const createdLabel = (() => {
     try {
-      return new Intl.DateTimeFormat("ja-JP", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(new Date(video.createdAt));
+      const d = new Date(video.createdAt);
+      return Number.isNaN(d.getTime()) ? "" : ROW_DATE_FORMATTER.format(d);
     } catch {
       return "";
     }
@@ -180,6 +184,13 @@ export default function VideoListRow({
   const isCustomThumbTime =
     typeof thumbnailTimeSec === "number" && Number.isFinite(thumbnailTimeSec);
 
+  const getResumeSec = () =>
+    progress &&
+    progress.currentTime > 3 &&
+    (progress.duration <= 0 || progress.currentTime < progress.duration - 5)
+      ? progress.currentTime
+      : 0;
+
   const handlePrimaryClick = () => {
     if (selectionMode && onToggleSelect) {
       onToggleSelect(video.id);
@@ -188,10 +199,15 @@ export default function VideoListRow({
     }
   };
 
+  const needsAmbientBlur =
+    video.kind === "manga" ||
+    (Boolean(video.width && video.height) &&
+      Math.abs((video.width ?? 16) / Math.max(1, video.height ?? 9) - 16 / 9) > 0.22);
+
   return (
     <div
       ref={rowRef}
-      className={`group flex flex-col gap-3 rounded-xl border p-2.5 transition sm:flex-row sm:items-center sm:gap-4 sm:px-3.5 ${
+      className={`cv-row group flex flex-col gap-3 rounded-xl border p-2.5 transition sm:flex-row sm:items-center sm:gap-4 sm:px-3.5 ${
         selectionMode && isSelected
           ? "border-rose-500/70 bg-rose-950/20"
           : "border-zinc-800/70 bg-zinc-900/40 hover:border-zinc-700 hover:bg-zinc-900/90"
@@ -218,6 +234,9 @@ export default function VideoListRow({
           type="button"
           onClick={handlePrimaryClick}
           onPointerDown={() => {
+            if (!selectionMode) {
+              prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
+            }
             if (video.kind !== "manga" && video.spriteFileId) {
               driveFetchCachedThumbnailUrl(
                 video.spriteFileId,
@@ -232,23 +251,27 @@ export default function VideoListRow({
           className="absolute inset-0 block h-full w-full"
         >
           {thumbUrl ? (
-            <div className="absolute inset-0 overflow-hidden bg-[#060609]">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={thumbUrl}
-                alt=""
-                aria-hidden="true"
-                decoding="async"
-                draggable={false}
-                className="pointer-events-none absolute inset-0 h-full w-full scale-125 select-none object-cover opacity-80 blur-xl saturate-[1.8] brightness-[0.34]"
-              />
-              <div
-                className="pointer-events-none absolute inset-0"
-                style={{
-                  background:
-                    "radial-gradient(ellipse 75% 60% at 15% 12%, rgba(255,255,255,0.16), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(8,8,14,0.48) 55%, rgba(255,255,255,0.05) 100%)",
-                }}
-              />
+            <div className="absolute inset-0 overflow-hidden bg-gradient-to-br from-zinc-900 to-[#060609]">
+              {needsAmbientBlur && (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={thumbUrl}
+                    alt=""
+                    aria-hidden="true"
+                    decoding="async"
+                    draggable={false}
+                    className="pointer-events-none absolute inset-0 h-full w-full scale-125 select-none object-cover opacity-80 blur-xl saturate-[1.8] brightness-[0.34]"
+                  />
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      background:
+                        "radial-gradient(ellipse 75% 60% at 15% 12%, rgba(255,255,255,0.16), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(8,8,14,0.48) 55%, rgba(255,255,255,0.05) 100%)",
+                    }}
+                  />
+                </>
+              )}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={thumbUrl}
@@ -257,7 +280,7 @@ export default function VideoListRow({
                 draggable={false}
                 className="absolute inset-0 z-10 h-full w-full select-none object-contain transition-transform duration-200 group-hover:scale-105"
               />
-              <div className="pointer-events-none absolute inset-0 z-20 rounded-lg shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]" />
+              <div className="pointer-events-none absolute inset-0 z-20 rounded-lg shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]" />
             </div>
           ) : (
             <div className="flex h-full w-full items-center justify-center text-zinc-700">
@@ -270,9 +293,18 @@ export default function VideoListRow({
             </div>
           )}
         </button>
-        {!selectionMode && video.duration > 0 && (
+        {video.kind !== "manga" && !selectionMode && video.duration > 0 && (
           <button
             type="button"
+            onPointerDown={() => {
+              prewarmVideoForInstantPlay(
+                video,
+                accessToken,
+                masterKey,
+                effectiveThumbTimeSec,
+                "high"
+              );
+            }}
             onClick={(e) => {
               e.stopPropagation();
               onSelect(video, effectiveThumbTimeSec);
@@ -308,6 +340,11 @@ export default function VideoListRow({
       <div className="min-w-0 flex-1">
         <button
           type="button"
+          onPointerDown={() => {
+            if (!selectionMode) {
+              prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
+            }
+          }}
           onClick={handlePrimaryClick}
           className="line-clamp-1 text-left text-sm font-semibold text-zinc-100 hover:text-white"
         >
@@ -361,7 +398,7 @@ export default function VideoListRow({
               className="inline-flex items-center gap-0.5 rounded border border-dashed border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-rose-500/60 hover:text-rose-300"
             >
               <Plus className="h-2.5 w-2.5" />
-              {genres.length === 0 ? "ジャンル設定" : ""}
+              {getContentGenresOnly(genres).length === 0 ? "ジャンル設定" : ""}
             </button>
           )}
         </div>
@@ -371,7 +408,11 @@ export default function VideoListRow({
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 text-xs text-zinc-400 sm:justify-end sm:gap-5">
         <div className="flex items-center gap-3 font-mono text-[11px]">
           <span className="w-14 text-right text-zinc-300">
-            {video.height ? `${video.height}p` : "--"}
+            {video.kind === "manga"
+              ? `${video.pageCount ?? video.manifest?.pages?.length ?? 0}P`
+              : video.height
+                ? `${video.height}p`
+                : "--"}
           </span>
           <span className="w-16 text-right">
             {video.sizeBytes ? formatBytes(video.sizeBytes) : "--"}
@@ -381,22 +422,24 @@ export default function VideoListRow({
 
         {!selectionMode && (
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => onAddToQueue(video)}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
-                isInQueue
-                  ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
-                  : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100"
-              }`}
-              title={isInQueue ? "キューに追加済み" : "再生キューに追加"}
-            >
-              {isInQueue ? (
-                <ListChecks className="h-3.5 w-3.5" />
-              ) : (
-                <ListPlus className="h-3.5 w-3.5" />
-              )}
-            </button>
+            {video.kind !== "manga" && (
+              <button
+                type="button"
+                onClick={() => onAddToQueue(video)}
+                className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
+                  isInQueue
+                    ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100"
+                }`}
+                title={isInQueue ? "キューに追加済み" : "再生キューに追加"}
+              >
+                {isInQueue ? (
+                  <ListChecks className="h-3.5 w-3.5" />
+                ) : (
+                  <ListPlus className="h-3.5 w-3.5" />
+                )}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onToggleFavorite(video.id)}
@@ -423,3 +466,5 @@ export default function VideoListRow({
     </div>
   );
 }
+
+export default memo(VideoListRow);

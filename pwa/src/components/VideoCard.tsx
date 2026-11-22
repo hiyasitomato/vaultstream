@@ -1,19 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { BookOpen, Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Sparkles, Tag } from "lucide-react";
 import {
   driveFetchCachedThumbnailUrl,
   driveFetchMangaPageUrl,
   formatBytes,
   formatDuration,
+  getCachedSpriteGrid,
   getSegmentUrlForTime,
   getSyncCachedThumbnailUrl,
   prefetchHlsPlaylist,
+  prewarmVideoForInstantPlay,
+  setCachedSpriteGrid,
 } from "@/lib/drive";
-import { extractSeriesBadge, getContentGenresOnly, getGenreStyle } from "@/lib/genres";
+import { extractSeriesBadge, getGenreStyle, sortGenresForCard } from "@/lib/genres";
 import { prefetchSegmentUrl } from "@/lib/segmentCache";
 import type { CustomGenreDef, PlaybackProgress, VaultVideoItem } from "@/lib/types";
+
+const CARD_DATE_FORMATTER = new Intl.DateTimeFormat("ja-JP", {
+  month: "short",
+  day: "numeric",
+});
 
 interface VideoCardProps {
   video: VaultVideoItem;
@@ -40,7 +48,7 @@ interface VideoCardProps {
   onClickGenre: (genre: string) => void;
 }
 
-export default function VideoCard({
+function VideoCard({
   video,
   accessToken,
   masterKey,
@@ -91,9 +99,16 @@ export default function VideoCard({
     rows: 6,
   });
   const [scrubRatio, setScrubRatio] = useState<number | null>(null);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
 
   useEffect(() => {
-    if (!spriteUrl || typeof Image === "undefined") return;
+    if (!spriteUrl) return;
+    const cachedGrid = getCachedSpriteGrid(spriteUrl);
+    if (cachedGrid) {
+      setSpriteGrid(cachedGrid);
+      return;
+    }
+    if (typeof Image === "undefined") return;
     let active = true;
     const img = new Image();
     img.onload = () => {
@@ -101,7 +116,9 @@ export default function VideoCard({
       const cols = Math.max(1, Math.round(img.naturalWidth / 160));
       const rows = Math.max(1, Math.round(img.naturalHeight / 90));
       if (cols >= 4 && rows >= 4 && cols <= 16 && rows <= 16) {
-        setSpriteGrid({ cols, rows });
+        const nextGrid = { cols, rows };
+        setCachedSpriteGrid(spriteUrl, nextGrid);
+        setSpriteGrid(nextGrid);
       }
     };
     img.src = spriteUrl;
@@ -109,6 +126,15 @@ export default function VideoCard({
       active = false;
     };
   }, [spriteUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverPrefetchTimerRef.current) {
+        clearTimeout(hoverPrefetchTimerRef.current);
+        hoverPrefetchTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const el = cardRef.current;
@@ -199,6 +225,10 @@ export default function VideoCard({
       : 0;
 
   const isManga = video.kind === "manga";
+  const needsAmbientBlur =
+    isManga ||
+    (Boolean(video.width && video.height) &&
+      Math.abs((video.width ?? 16) / Math.max(1, video.height ?? 9) - 16 / 9) > 0.22);
   const pageCount = video.pageCount ?? video.manifest?.pageCount ?? video.manifest?.pages?.length ?? 0;
 
   const seriesBadge = extractSeriesBadge(video.title);
@@ -213,14 +243,19 @@ export default function VideoCard({
 
   const createdLabel = (() => {
     try {
-      return new Intl.DateTimeFormat("ja-JP", {
-        month: "short",
-        day: "numeric",
-      }).format(new Date(video.createdAt));
+      const d = new Date(video.createdAt);
+      return Number.isNaN(d.getTime()) ? "" : CARD_DATE_FORMATTER.format(d);
     } catch {
       return "";
     }
   })();
+
+  const getResumeSec = () =>
+    progress &&
+    progress.currentTime > 3 &&
+    (progress.duration <= 0 || progress.currentTime < progress.duration - 5)
+      ? progress.currentTime
+      : 0;
 
   const handlePrimaryClick = () => {
     if (selectionMode && onToggleSelect) {
@@ -281,7 +316,8 @@ export default function VideoCard({
   return (
     <div
       ref={cardRef}
-      onMouseEnter={() => {
+      onPointerEnter={(e) => {
+        if (e.pointerType !== "mouse") return;
         if (video.kind === "manga") {
           const pages = video.manifest?.pages ?? [];
           if (pages.length > 0) {
@@ -329,14 +365,15 @@ export default function VideoCard({
           }, 250);
         }
       }}
-      onMouseLeave={() => {
+      onPointerLeave={(e) => {
+        if (e.pointerType !== "mouse") return;
         setScrubRatio(null);
         if (hoverPrefetchTimerRef.current) {
           clearTimeout(hoverPrefetchTimerRef.current);
           hoverPrefetchTimerRef.current = null;
         }
       }}
-      className={`group flex flex-col overflow-hidden rounded-xl transition ${
+      className={`cv-card group flex flex-col overflow-hidden rounded-xl transition ${
         compact ? "w-64 shrink-0 sm:w-72" : "w-full"
       } ${selectionMode && isSelected ? "ring-2 ring-rose-500 ring-offset-2 ring-offset-[#0b0b0e]" : ""}`}
     >
@@ -353,6 +390,9 @@ export default function VideoCard({
             if (e.pointerType !== "mouse") {
               setScrubRatio(null);
             }
+            if (!selectionMode) {
+              prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
+            }
             if (video.kind !== "manga" && video.spriteFileId) {
               ensureSpriteLoaded("high");
             }
@@ -364,24 +404,28 @@ export default function VideoCard({
           aria-label={selectionMode ? `${video.title} を選択` : `${video.title} を開く`}
         >
           {thumbUrl ? (
-            <div className="absolute inset-0 overflow-hidden bg-[#060609]">
-              {/* Lightweight Apple Liquid Glass ambient refraction backdrop (zero backdrop-filter GPU bloat!) */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={thumbUrl}
-                alt=""
-                aria-hidden="true"
-                decoding="async"
-                draggable={false}
-                className="pointer-events-none absolute inset-0 h-full w-full scale-125 select-none object-cover opacity-80 blur-xl saturate-[1.8] brightness-[0.34]"
-              />
-              <div
-                className="pointer-events-none absolute inset-0"
-                style={{
-                  background:
-                    "radial-gradient(ellipse 75% 60% at 15% 12%, rgba(255,255,255,0.16), transparent 60%), radial-gradient(ellipse 65% 55% at 88% 88%, rgba(255,255,255,0.09), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(8,8,14,0.48) 55%, rgba(255,255,255,0.05) 100%)",
-                }}
-              />
+            <div className="absolute inset-0 overflow-hidden bg-gradient-to-br from-zinc-900 to-[#060609]">
+              {/* Only render GPU blur ambient backdrop on manga / non-16:9 items that actually have margins! */}
+              {needsAmbientBlur && (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={thumbUrl}
+                    alt=""
+                    aria-hidden="true"
+                    decoding="async"
+                    draggable={false}
+                    className="pointer-events-none absolute inset-0 h-full w-full scale-125 select-none object-cover opacity-80 blur-xl saturate-[1.8] brightness-[0.34]"
+                  />
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      background:
+                        "radial-gradient(ellipse 75% 60% at 15% 12%, rgba(255,255,255,0.16), transparent 60%), radial-gradient(ellipse 65% 55% at 88% 88%, rgba(255,255,255,0.09), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(8,8,14,0.48) 55%, rgba(255,255,255,0.05) 100%)",
+                    }}
+                  />
+                </>
+              )}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={thumbUrl}
@@ -391,7 +435,7 @@ export default function VideoCard({
                 className="absolute inset-0 z-10 h-full w-full select-none object-contain transition-transform duration-300 group-hover:scale-[1.03]"
               />
               {/* Subtle top specular glass edge */}
-              <div className="pointer-events-none absolute inset-0 z-20 rounded-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]" />
+              <div className="pointer-events-none absolute inset-0 z-20 rounded-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]" />
             </div>
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-900 to-zinc-950 text-zinc-700">
@@ -455,18 +499,18 @@ export default function VideoCard({
         {!selectionMode && (
           <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1">
             {isManga && (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-500/90 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-zinc-950 shadow backdrop-blur-sm">
+              <span className="inline-flex items-center gap-1 rounded bg-amber-500/95 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-zinc-950 shadow">
                 <BookOpen className="h-2.5 w-2.5" />
                 漫画
               </span>
             )}
             {!isManga && qualityBadge && (
-              <span className="rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-zinc-100 backdrop-blur-sm">
+              <span className="rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-zinc-100">
                 {qualityBadge}
               </span>
             )}
             {seriesBadge && !compact && (
-              <span className="max-w-[130px] truncate rounded bg-rose-600/85 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+              <span className="max-w-[130px] truncate rounded bg-rose-600/90 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                 {seriesBadge}
               </span>
             )}
@@ -538,14 +582,23 @@ export default function VideoCard({
         {!isManga && !showingScrubSprite && !selectionMode && video.duration > 0 && (
           <button
             type="button"
+            onPointerDown={() => {
+              prewarmVideoForInstantPlay(
+                video,
+                accessToken,
+                masterKey,
+                effectiveThumbTimeSec,
+                "high"
+              );
+            }}
             onClick={(e) => {
               e.stopPropagation();
               onSelect(video, effectiveThumbTimeSec);
             }}
-            className={`absolute bottom-2 left-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold backdrop-blur-sm transition ${
+            className={`absolute bottom-2 left-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold transition ${
               isCustomThumbTime
-                ? "bg-emerald-950/85 text-emerald-200 ring-1 ring-emerald-500/40 hover:bg-emerald-900"
-                : "bg-black/75 text-zinc-300 hover:bg-black/95 hover:text-white"
+                ? "bg-emerald-950/90 text-emerald-200 ring-1 ring-emerald-500/40 hover:bg-emerald-900"
+                : "bg-black/80 text-zinc-300 hover:bg-black/95 hover:text-white"
             }`}
             title={`サムネイルの位置 (${formatDuration(effectiveThumbTimeSec)}) から再生`}
           >
@@ -580,6 +633,11 @@ export default function VideoCard({
       <div className="flex flex-1 flex-col gap-1.5 px-0.5 pt-2.5">
         <button
           type="button"
+          onPointerDown={() => {
+            if (!selectionMode) {
+              prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
+            }
+          }}
           onClick={handlePrimaryClick}
           className="line-clamp-2 text-left text-sm font-semibold leading-snug text-zinc-100 transition hover:text-white"
         >
@@ -626,12 +684,22 @@ export default function VideoCard({
           </button>
         )}
 
-        {/* Genre pills + quick "+ ジャンル" button (content genres only; category shown via tabs) */}
-        {!compact && (() => {
-          const contentGenres = getContentGenresOnly(genres);
+        {/* Genre pills (max 3 content + 1 creator/studio when collapsed, inline expandable) + tag modal trigger */}
+        {(() => {
+          const { content, credits } = sortGenresForCard(genres);
+          const maxContent = compact ? 2 : 3;
+          const visibleContent = tagsExpanded ? content : content.slice(0, maxContent);
+          const visibleCredits = tagsExpanded ? credits : credits.slice(0, 1);
+          const shownTags = [...visibleContent, ...visibleCredits];
+          const hiddenCount =
+            (content.length - visibleContent.length) +
+            (credits.length - visibleCredits.length);
+          const hasOverflow = content.length > maxContent || credits.length > 1;
+          const totalCount = content.length + credits.length;
+
           return (
             <div className="mt-1 flex flex-wrap items-center gap-1">
-              {contentGenres.slice(0, 4).map((genre) => (
+              {shownTags.map((genre) => (
                 <button
                   key={genre}
                   type="button"
@@ -647,13 +715,29 @@ export default function VideoCard({
                   #{genre}
                 </button>
               ))}
-              {contentGenres.length > 4 && (
+              {!tagsExpanded && hiddenCount > 0 && (
                 <button
                   type="button"
-                  onClick={() => onEditTags(video)}
-                  className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTagsExpanded(true);
+                  }}
+                  className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 hover:border-zinc-700 hover:text-white"
+                  title="残りのタグをその場で展開"
                 >
-                  +{contentGenres.length - 4}
+                  +{hiddenCount}
+                </button>
+              )}
+              {tagsExpanded && hasOverflow && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTagsExpanded(false);
+                  }}
+                  className="rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                >
+                  閉じる
                 </button>
               )}
               {!selectionMode && (
@@ -664,10 +748,10 @@ export default function VideoCard({
                     onEditTags(video);
                   }}
                   className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-zinc-700/80 px-1.5 py-0.5 text-[10px] text-zinc-400 transition hover:border-rose-500/60 hover:text-rose-300"
-                  title="ジャンルを設定"
+                  title="タグを追加・編集"
                 >
                   <Plus className="h-2.5 w-2.5" />
-                  {contentGenres.length === 0 ? "ジャンル設定" : ""}
+                  {totalCount === 0 ? "ジャンル設定" : ""}
                 </button>
               )}
             </div>
@@ -680,6 +764,9 @@ export default function VideoCard({
             {isManga ? (
               <button
                 type="button"
+                onPointerDown={() => {
+                  prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelect(video);
@@ -737,3 +824,5 @@ export default function VideoCard({
     </div>
   );
 }
+
+export default memo(VideoCard);

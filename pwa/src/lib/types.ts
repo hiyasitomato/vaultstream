@@ -111,6 +111,7 @@ export interface SyncedVaultUserData {
 export type NavSection = "home" | "genres" | "favorites" | "history" | "files";
 export type ViewMode = "grid" | "list";
 export type SortMode =
+  | "recommended"
   | "random"
   | "newest"
   | "oldest"

@@ -119,6 +119,61 @@ export function getContentGenresOnly(genres: string[]): string[] {
   return genres.filter((g) => !CATEGORY_TAG_SET.has(g));
 }
 
+export type GenreGroupId = "main" | "studio" | "creator" | "all";
+
+export const GENRE_GROUP_TABS: Array<{ id: GenreGroupId; label: string }> = [
+  { id: "main", label: "主要ジャンル" },
+  { id: "studio", label: "制作・ブランド" },
+  { id: "creator", label: "作者・クリエイター" },
+  { id: "all", label: "すべて" },
+];
+
+export function isCreatorOrStudioGenre(genre: string): boolean {
+  return genre.startsWith("制作:") || genre.startsWith("原作:") || genre.startsWith("作者:");
+}
+
+export function getGenreGroup(genre: string): GenreGroupId {
+  if (genre.startsWith("制作:") || genre.startsWith("原作:")) return "studio";
+  if (genre.startsWith("作者:")) return "creator";
+  return "main";
+}
+
+export function matchesGenreGroup(genre: string, group: GenreGroupId): boolean {
+  if (group === "all") return true;
+  if (group === "main") return !isCreatorOrStudioGenre(genre);
+  return getGenreGroup(genre) === group;
+}
+
+export function sortGenresForCard(genres: string[]): {
+  content: string[];
+  credits: string[];
+} {
+  const content: string[] = [];
+  const creators: string[] = [];
+  const brands: string[] = [];
+  const studios: string[] = [];
+
+  for (const g of genres) {
+    if (CATEGORY_TAG_SET.has(g)) continue;
+    if (g.startsWith("作者:")) {
+      creators.push(g);
+    } else if (g.startsWith("原作:")) {
+      brands.push(g);
+    } else if (g.startsWith("制作:")) {
+      studios.push(g);
+    } else if (g === "神回・お気に入り") {
+      content.unshift(g);
+    } else {
+      content.push(g);
+    }
+  }
+
+  return {
+    content,
+    credits: [...creators, ...brands, ...studios],
+  };
+}
+
 export function extractSeriesBadge(title: string): string | null {
   const bracketMatch = title.match(/^[【\[『「]([^】\]』」]{2,18})[】\]』」]/);
   return bracketMatch ? bracketMatch[1].trim() : null;

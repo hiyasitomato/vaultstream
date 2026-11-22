@@ -39,7 +39,8 @@ Yet existing ways to watch your personal video library from Google Drive all fal
 ### Performance Engineered Like YouTube
 - **Dual-Rendition Fast-Start ABR (360p → Original HD/4K)**: Starts playback & seeking on lightweight 360p 8s chunks and automatically upgrades to your lossless original stream (`hls.js` ABR, plus manual quality switcher).
 - **Hardware WebCrypto Decryption**: Uses native browser WebCrypto AES-128 (`progressive: false`, `enableSoftwareAES: false`) — zero slow JS software decryption.
-- **6-Parallel Background Full-Video Prefetcher**: Downloads the entire video into a 512MB in-memory LRU cache while watching, deduplicated seamlessly with a custom `hls.js` fragment loader so seeking anywhere is instant.
+- **6-Parallel Background Prefetcher (512MB RAM LRU + up to 128GB IndexedDB Cache)**: Downloads segments into a persistent encrypted IndexedDB SSD cache (12GB default, 3–64GB presets, up to 128GB max) and 512MB in-memory LRU cache, deduplicated with a custom `hls.js` fragment loader so seeking anywhere is instant.
+- **YouTube-Style Personalized Recommendations**: Learns from favorites, completion ratio, repeat plays, creators/studios, series continuations, and manga/video cross-links to rank your home feed (`Recommended`) and a curated **"Recommended for You"** shelf.
 - **6×6 Storyboard Hover Previews**: Smooth 36-frame scrub previews on both library cards and the unified custom seek bar.
 - **Single Encrypted Catalog (`library_index.enc`) + IndexedDB Cache**: Instant home screen load even with hundreds of videos.
 
@@ -55,7 +56,7 @@ Many people hesitate to store personal videos on Google Drive due to privacy con
 - Unified YouTube-style custom player (auto-hide HUD, PiP, "Back to Home" mini-player that keeps playing, ±10s skip, speed control, keyboard shortcuts).
 - **1-Click Thumbnail Capture & Timestamp Jump**: Capture any frame as the video's encrypted thumbnail; click the `📷 mm:ss` badge on any card or the seek bar marker to jump directly to that scene.
 - Playback queue (reorder, shuffle, auto-play next, MediaSession controls).
-- Custom genres, bulk assignment, multi-token AND / `-exclude` search, grid/list toggle, and encrypted cross-device sync (`user_meta.enc`).
+- **Custom Genres, Grouped Tag Bar & AND/OR Filtering**: Organize genres into collapsible groups, switch Tag AND/OR matching right on the home bar, bulk-tag items, and sync encrypted settings across devices (`user_meta.enc`).
 
 ---
 
@@ -70,18 +71,22 @@ Many people hesitate to store personal videos on Google Drive due to privacy con
                                         Official Google Drive API v3
                                         (Your OAuth Token — Direct)
                                                    ▼
-[Cloudflare Pages ($0 Static PWA)] ──▶ [Browser on PC / iPad / Phone]
-  (Video bytes never touch Cloudflare)       └─ WebCrypto Decryption + 512MB LRU Cache
+[Cloudflare / GitHub Pages ($0 Static PWA)] ──▶ [Browser on PC / iPad / Phone]
+  (Video bytes never touch any host server)     └─ WebCrypto Decryption + 512MB RAM / 12GB+ SSD Cache
 ```
 
 ---
 
 ## Quick Start
 
-### 📱 Fastest Path: Smartphone / Browser Only (Zero PC, Zero Coding!)
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a free project, enable **Google Drive API**, add your Gmail as a **Test user**, and create a **Web application** OAuth Client ID with **`https://hiyasitomato.github.io`** under **Authorized JavaScript origins**.
-2. Open **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** on your iPhone / Android / iPad / PC (and add to Home Screen as a PWA).
-3. Tap the **⚙ Settings** button, paste your **Web Client ID** and your private **Google Drive Folder URL**, sign in with Google, and tap **Upload** to encrypt & upload videos straight from your camera roll! *(Your data talks directly between your browser and your own Google Drive — nothing ever touches any third-party server.)*
+### 📱 Fastest Path: Smartphone / Browser Only (With Built-in Google Cloud & Drive Auto-Setup!)
+1. Open **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** on your iPhone / Android / iPad / PC (and add to Home Screen as a PWA).
+2. Expand **Google Cloud & Drive Auto-Setup** directly on the login screen:
+   - **1-Command Cloud Shell Provisioning**: Click **"Copy command & open Cloud Shell"** and paste into Google Cloud Shell to auto-create/select a project, enable `drive.googleapis.com`, and generate a 1-tap `#autoconfig` return URL.
+   - **OAuth JSON Drag & Drop / Auto-Paste**: Drop your downloaded `client_secret_*.json` anywhere in the wizard (or copy your Client ID and press `Ctrl+V` / use clipboard auto-read), plus 1-click origin copying.
+   - **Automatic Google Drive Vault Folder Creation**: Leave the Drive Folder ID blank and sign in — VaultStream automatically finds or creates a private `VaultStream-Vault` folder in your Drive.
+   - **1-Tap Multi-Device Setup Link (`#autoconfig=...`)**: Copy the setup link after configuring on desktop and open it on your iPhone/iPad to sync Client ID & Folder ID in 1 tap.
+3. Tap **Upload** to encrypt & upload videos straight from your camera roll! *(Your data talks directly between your browser and your own Google Drive — nothing ever touches any third-party server.)*
 
 ---
 

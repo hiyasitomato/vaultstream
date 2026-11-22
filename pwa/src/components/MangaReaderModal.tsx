@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BookOpen,
@@ -59,7 +59,7 @@ interface MangaReaderModalProps {
   onClose: () => void;
 }
 
-function PickerThumb({
+const PickerThumb = memo(function PickerThumb({
   item,
   accessToken,
   masterKey,
@@ -125,7 +125,7 @@ function PickerThumb({
       )}
     </div>
   );
-}
+});
 
 type ReadingMode = "rtl" | "ltr" | "vertical";
 type SpreadMode = "single" | "double";
@@ -268,7 +268,6 @@ export default function MangaReaderModal({
   const [autoSlide, setAutoSlide] = useState(false);
   const [slideSec, setSlideSec] = useState<number>(5);
   const [loopSlide, setLoopSlide] = useState<boolean>(true);
-  const [slideElapsedPct, setSlideElapsedPct] = useState<number>(0);
   const [speedPanelOpen, setSpeedPanelOpen] = useState(false);
 
   // In-reader Video Picker for 1-tap Simultaneous Video + Manga Split Mode
@@ -318,7 +317,6 @@ export default function MangaReaderModal({
     setPageIdx(computeStartIdx(initialProgressRef.current));
     setPageUrls({});
     setAutoSlide(false);
-    setSlideElapsedPct(0);
     setHoverScrub(null);
     setIsDraggingScrub(false);
     isDraggingScrubRef.current = false;
@@ -468,20 +466,17 @@ export default function MangaReaderModal({
       setAutoSlide(false);
       return cur;
     });
-    setSlideElapsedPct(0);
   }, [stepSize, totalPages, loopSlide]);
 
   const goPrev = useCallback(() => {
     setPageIdx((cur) => Math.max(0, cur - stepSize));
-    setSlideElapsedPct(0);
   }, [stepSize]);
 
   const currentPageReady = Boolean(pageUrls[pageIdx]) && !loadingCurrent;
 
-  // Auto-Slide timer (for both paged mode AND smooth auto-scroll in vertical mode!)
+  // Auto-Slide timer (zero 20Hz React re-renders: single setTimeout + CSS compositor animation!)
   useEffect(() => {
     if (!autoSlide || totalPages === 0) {
-      setSlideElapsedPct(0);
       return;
     }
 
@@ -506,23 +501,15 @@ export default function MangaReaderModal({
       return () => clearInterval(timer);
     }
 
-    // Wait until current page is decrypted/loaded before counting down
+    // Wait until current page is decrypted/loaded before starting countdown
     if (!currentPageReady) return;
 
     const totalMs = Math.max(1000, slideSec * 1000);
-    let elapsed = 0;
-    const tickMs = 50;
-    const timer = setInterval(() => {
-      elapsed += tickMs;
-      const pct = Math.min(100, (elapsed / totalMs) * 100);
-      setSlideElapsedPct(pct);
-      if (elapsed >= totalMs) {
-        elapsed = 0;
-        goNext();
-      }
-    }, tickMs);
+    const timer = setTimeout(() => {
+      goNext();
+    }, totalMs);
 
-    return () => clearInterval(timer);
+    return () => clearTimeout(timer);
   }, [autoSlide, slideSec, loopSlide, readingMode, currentPageReady, pageIdx, totalPages, goNext]);
 
   // Keyboard navigation
@@ -724,20 +711,27 @@ export default function MangaReaderModal({
       aria-modal="true"
       aria-label={manga.title}
     >
-      {/* Auto-Slide Countdown Progress Hairline */}
+      {/* Auto-Slide Countdown Progress Hairline (GPU compositor animation) */}
       {autoSlide && readingMode !== "vertical" && (
         <div className="pointer-events-none absolute left-0 right-0 top-0 z-30 h-1 bg-zinc-900">
-          <div
-            className="h-full bg-gradient-to-r from-rose-500 to-fuchsia-400 transition-[width] duration-75"
-            style={{ width: `${slideElapsedPct}%` }}
-          />
+          {currentPageReady && (
+            <div
+              key={`${pageIdx}-${slideSec}-${currentPageReady}`}
+              className="h-full origin-left bg-gradient-to-r from-rose-500 to-fuchsia-400"
+              style={{
+                animation: `mangaSlideBar ${Math.max(1, slideSec)}s linear forwards`,
+              }}
+            />
+          )}
         </div>
       )}
 
       {/* Top HUD Header (Apple Liquid Glass) */}
       <header
-        className={`z-20 flex shrink-0 items-center justify-between gap-2 border-b border-white/15 bg-black/45 px-3 py-2 shadow-[inset_0_-1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl transition-opacity duration-200 sm:px-4 ${
-          hudVisible ? "opacity-100" : "pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0"
+        className={`z-20 flex shrink-0 items-center justify-between gap-2 border-b border-white/15 bg-black/45 px-3 shadow-[inset_0_-1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl transition-opacity duration-200 sm:px-4 ${
+          hudVisible
+            ? "pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] opacity-100"
+            : "pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0"
         }`}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -1205,7 +1199,6 @@ export default function MangaReaderModal({
                     if (info) {
                       setHoverScrub(info);
                       setPageIdx(info.idx);
-                      setSlideElapsedPct(0);
                     }
                   }}
                   onPointerMove={(e) => {
@@ -1214,7 +1207,6 @@ export default function MangaReaderModal({
                       setHoverScrub(info);
                       if (isDraggingScrubRef.current) {
                         setPageIdx(info.idx);
-                        setSlideElapsedPct(0);
                       }
                     }
                   }}
@@ -1230,7 +1222,6 @@ export default function MangaReaderModal({
                       const info = getScrubInfoFromClientX(e.clientX) ?? hoverScrub;
                       if (info) {
                         setPageIdx(info.idx);
-                        setSlideElapsedPct(0);
                       }
                       if (e.pointerType !== "mouse") {
                         setHoverScrub(null);
@@ -1404,7 +1395,6 @@ export default function MangaReaderModal({
                 type="button"
                 onClick={() => {
                   setPageIdx(0);
-                  setSlideElapsedPct(0);
                   if (verticalScrollRef.current) {
                     verticalScrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
                   }

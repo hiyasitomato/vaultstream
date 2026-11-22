@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BookOpen,
@@ -10,14 +10,19 @@ import {
   Clock,
   Cloud,
   CloudOff,
+  Copy,
+  ExternalLink,
   Film,
   FolderOpen,
+  FolderPlus,
   Grid,
+  HardDrive,
   Hash,
   Heart,
   History,
   Home,
   KeyRound,
+  Link2,
   List,
   ListMusic,
   ListPlus,
@@ -34,28 +39,39 @@ import {
   Settings,
   ShieldCheck,
   Shuffle,
-  SlidersHorizontal,
   Sparkles,
   Tag,
+  Terminal,
   Trash2,
   Unlock,
   Upload,
+  Wand2,
   X,
+  Zap,
 } from "lucide-react";
-import { buildCrossMediaIndex, findSeriesAndRelatedVideos } from "@/lib/crossMedia";
+import {
+  buildCrossMediaIndex,
+  findSeriesAndRelatedVideos,
+  normalizeCrossMediaTitle,
+} from "@/lib/crossMedia";
 import { unlockVaultWithPassphrase } from "@/lib/crypto";
 import {
+  buildDriveMediaUrl,
   clearMangaPageCache,
   clearThumbnailCache,
   driveFetchCachedThumbnailUrl,
+  EMPTY_STRING_ARRAY,
   fetchVaultVideosFast,
+  findOrCreateRootVaultFolder,
   formatBytes,
+  getCacheSegmentUrls,
   getSyncCachedThumbnailUrl,
   inspectVaultRoot,
   isValidClientId,
   listUserMetaRevisions,
   loadSyncedUserDataFromDrive,
   loadUserMetaRevisionFromDrive,
+  prewarmVideoForInstantPlay,
   requestGoogleAccessToken,
   revokeGoogleAccessToken,
   saveSyncedUserDataToDrive,
@@ -63,14 +79,35 @@ import {
 import {
   CATEGORY_TAG_SET,
   DEFAULT_CUSTOM_GENRES,
+  extractAutoGenres,
   GENRE_COLOR_OPTIONS,
+  GENRE_GROUP_TABS,
+  type GenreGroupId,
   getContentGenresOnly,
   getEffectiveGenres,
   getGenreStyle,
+  isCreatorOrStudioGenre,
+  matchesGenreGroup,
 } from "@/lib/genres";
-import { clearSegmentCache } from "@/lib/segmentCache";
+import { clearSegmentCache, isMainSegmentLoading } from "@/lib/segmentCache";
+import {
+  clearAllThumbDbCache,
+  DISK_CACHE_PRESETS_MB,
+  getAllCachedKeys,
+  getDiskCacheLimitBytes,
+  getDiskCacheLimitMb,
+  getDiskCacheStats,
+  putCachedPlaylistBytes,
+  putCachedSegmentBytes,
+  putCachedThumbBytes,
+  requestPersistentStorage,
+  setDiskCacheLimitMb,
+  trimDiskCacheToLimit,
+  type DiskCacheStats,
+} from "@/lib/thumbDb";
 import {
   clearAuthSession,
+  clearCachedVaultConfig,
   clearCachedVideoList,
   clearSavedPassphrase,
   createDefaultUserData,
@@ -78,13 +115,15 @@ import {
   getSavedFolderIdOverride,
   loadAllProgress,
   loadAuthSession,
-  loadCachedVideoList,
+  loadCachedVaultConfig,
+  loadCachedVideoListAsync,
   loadLocalUserData,
   loadSavedPassphrase,
   mergeProgressMaps,
   mergeSyncedUserData,
   saveAllProgress,
   saveAuthSession,
+  saveCachedVaultConfig,
   saveCachedVideoList,
   saveLocalUserData,
   savePassphrase,
@@ -93,17 +132,14 @@ import {
 } from "@/lib/storage";
 import type {
   CustomGenreDef,
-  DurationFilter,
   NavSection,
   PlaybackProgress,
-  QualityFilter,
   SortMode,
   SyncedVaultUserData,
   VaultConfig,
   VaultVideoItem,
   VideoUserMeta,
   ViewMode,
-  WatchFilter,
 } from "@/lib/types";
 import MangaReaderModal from "./MangaReaderModal";
 import TagEditorModal from "./TagEditorModal";
@@ -125,6 +161,76 @@ function extractFolderIdFromInput(raw: string): string {
   return trimmed;
 }
 
+interface ParsedAutoSetup {
+  clientId?: string;
+  folderId?: string;
+  origins?: string[];
+}
+
+function parseAutoSetupPayload(raw: string): ParsedAutoSetup {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+
+  const out: ParsedAutoSetup = {};
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const webBlock =
+      (parsed.web as Record<string, unknown> | undefined) ??
+      (parsed.installed as Record<string, unknown> | undefined);
+    if (webBlock && typeof webBlock.client_id === "string") {
+      out.clientId = webBlock.client_id.trim();
+    }
+    if (webBlock && Array.isArray(webBlock.javascript_origins)) {
+      out.origins = webBlock.javascript_origins.filter(
+        (x): x is string => typeof x === "string"
+      );
+    }
+    const directClient = parsed.c ?? parsed.clientId ?? parsed.client_id;
+    if (!out.clientId && typeof directClient === "string") {
+      out.clientId = directClient.trim();
+    }
+    const directFolder = parsed.f ?? parsed.folderId ?? parsed.folder_id;
+    if (typeof directFolder === "string" && directFolder.trim()) {
+      out.folderId = extractFolderIdFromInput(directFolder);
+    }
+  } catch {
+    // Plain text / pasted URL fallback
+  }
+
+  if (!out.clientId) {
+    const cidMatch = trimmed.match(/(\d{6,}-[a-z0-9_.-]+\.apps\.googleusercontent\.com)/i);
+    if (cidMatch) {
+      out.clientId = cidMatch[1];
+    }
+  }
+  if (!out.folderId) {
+    const folderMatch = trimmed.match(/\/folders\/([A-Za-z0-9_-]{10,})/);
+    const qMatch = trimmed.match(/[?&]id=([A-Za-z0-9_-]{10,})/);
+    if (folderMatch) out.folderId = folderMatch[1];
+    else if (qMatch) out.folderId = qMatch[1];
+  }
+  return out;
+}
+
+function encodeAutoConfigPayload(clientId: string, folderId: string): string {
+  const payload: Record<string, string> = {};
+  if (clientId.trim()) payload.c = clientId.trim();
+  if (folderId.trim()) payload.f = folderId.trim();
+  return btoa(JSON.stringify(payload));
+}
+
+function decodeAutoConfigHash(encoded: string): ParsedAutoSetup {
+  try {
+    const normalized = decodeURIComponent(encoded.trim())
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const decoded = atob(normalized);
+    return parseAutoSetupPayload(decoded);
+  } catch {
+    return {};
+  }
+}
+
 function seededOrderHash(id: string, seed: number): number {
   let h = (seed ^ 0x811c9dc5) >>> 0;
   for (let i = 0; i < id.length; i += 1) {
@@ -137,7 +243,7 @@ function seededOrderHash(id: string, seed: number): number {
   return h >>> 0;
 }
 
-function CrossMediaMiniThumb({
+const CrossMediaMiniThumb = memo(function CrossMediaMiniThumb({
   item,
   accessToken,
   masterKey,
@@ -193,17 +299,21 @@ function CrossMediaMiniThumb({
     thumbVersion,
   ]);
 
+  const needsAmbientBlur = item.kind === "manga";
+
   return (
     <div className="relative h-24 flex-1 overflow-hidden rounded-lg bg-[#060609] ring-1 ring-white/15">
       {url ? (
         <>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={url}
-            alt=""
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-75 blur-xl saturate-[1.8] brightness-[0.34]"
-          />
+          {needsAmbientBlur && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={url}
+              alt=""
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-75 blur-xl saturate-[1.8] brightness-[0.34]"
+            />
+          )}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={url}
@@ -221,7 +331,7 @@ function CrossMediaMiniThumb({
       </span>
     </div>
   );
-}
+});
 
 export default function VaultStreamApp() {
   const [clientId, setClientId] = useState(ENV_CLIENT_ID);
@@ -254,6 +364,38 @@ export default function VaultStreamApp() {
   const [syncStatus, setSyncStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [restoringHistory, setRestoringHistory] = useState(false);
 
+  // On-device persistent encrypted cache manager (iPad / iPhone / PC instant start!)
+  const [cacheModalOpen, setCacheModalOpen] = useState(false);
+  const [cacheLimitMb, setCacheLimitMb] = useState<number>(() => getDiskCacheLimitMb());
+  const [diskCacheStats, setDiskCacheStats] = useState<DiskCacheStats>({
+    thumbCount: 0,
+    playlistCount: 0,
+    segmentCount: 0,
+    segmentBytes: 0,
+    totalBytes: 0,
+    limitBytes: getDiskCacheLimitBytes(),
+    quotaBytes: null,
+  });
+  const [cacheBuildState, setCacheBuildState] = useState<{
+    running: boolean;
+    label: string;
+    done: number;
+    total: number;
+    skipped: number;
+    downloadedBytes: number;
+    speedBps: number;
+  }>({
+    running: false,
+    label: "",
+    done: 0,
+    total: 0,
+    skipped: 0,
+    downloadedBytes: 0,
+    speedBps: 0,
+  });
+  const cacheBuildAbortRef = useRef(false);
+  const cacheBuildControllerRef = useRef<AbortController | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -263,28 +405,38 @@ export default function VaultStreamApp() {
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
 
-  // Search, file-style filters, and multi-genre state
+  // Search, category tabs, and multi-genre state
   const [categoryTab, setCategoryTab] = useState<"all" | "現実" | "アニメ" | "漫画">("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [onlyUncategorized, setOnlyUncategorized] = useState(false);
   const [genreMatchMode, setGenreMatchMode] = useState<"AND" | "OR">("AND");
-  const [sortMode, setSortMode] = useState<SortMode>("random");
+  const [sortMode, setSortMode] = useState<SortMode>("recommended");
+  const [visibleHomeCount, setVisibleHomeCount] = useState(36);
+  const homeLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const [homeShuffleSeed, setHomeShuffleSeed] = useState<number>(() =>
     Math.floor(Math.random() * 0x7fffffff)
   );
   const reshuffleHome = useCallback(() => {
     setHomeShuffleSeed(Math.floor(Math.random() * 0x7fffffff));
   }, []);
-  const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
-  const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
-  const [watchFilter, setWatchFilter] = useState<WatchFilter>("all");
+  const [recProgressSnapshot, setRecProgressSnapshot] = useState<Record<string, PlaybackProgress>>({});
 
   // Bulk genre assignment mode
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [bulkNewGenreName, setBulkNewGenreName] = useState("");
+  const [bulkGenreGroup, setBulkGenreGroup] = useState<GenreGroupId>("main");
+  const [bulkGenreSearch, setBulkGenreSearch] = useState("");
+
+  // Tag UI organization state (grouped pills, quick search & collapse)
+  const [homeGenreGroup, setHomeGenreGroup] = useState<GenreGroupId>("main");
+  const [homeGenreExpanded, setHomeGenreExpanded] = useState(false);
+  const [sidebarGenreMode, setSidebarGenreMode] = useState<"main" | "credits">("main");
+  const [sidebarGenreSearch, setSidebarGenreSearch] = useState("");
+  const [manageGenreGroup, setManageGenreGroup] = useState<GenreGroupId>("main");
+  const [manageGenreSearch, setManageGenreSearch] = useState("");
+  const [hideZeroGenres, setHideZeroGenres] = useState(false);
 
   // Genre management page form state
   const [newGenreName, setNewGenreName] = useState("");
@@ -305,11 +457,22 @@ export default function VaultStreamApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftClientId, setDraftClientId] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
+  const [autoSetupOpen, setAutoSetupOpen] = useState(false);
+  const [setupWizardNotice, setSetupWizardNotice] = useState<string | null>(null);
+  const [autoSetupBusy, setAutoSetupBusy] = useState(false);
+  const oauthJsonInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeVideo =
     queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
 
   const queueIdSet = useMemo(() => new Set(queue.map((v) => v.id)), [queue]);
+
+  // Freeze recommendation progress snapshot while a video/manga modal is open so 5s ticks never re-sort the grid mid-playback
+  useEffect(() => {
+    if (!activeVideo && !activeManga) {
+      setRecProgressSnapshot(progressMap);
+    }
+  }, [activeVideo, activeManga, progressMap]);
 
   const showQueueToast = useCallback((message: string) => {
     setQueueToast(message);
@@ -365,6 +528,10 @@ export default function VaultStreamApp() {
 
   const handleAddToQueue = useCallback(
     (video: VaultVideoItem) => {
+      if (video.kind === "manga") {
+        setActiveManga(video);
+        return;
+      }
       setQueue((prev) => {
         if (prev.some((item) => item.id === video.id)) {
           showQueueToast("すでに再生キューに入っています");
@@ -394,7 +561,7 @@ export default function VaultStreamApp() {
   );
 
   const handleBulkAddToQueue = useCallback(() => {
-    const picked = videos.filter((v) => selectedVideoIds.has(v.id));
+    const picked = videos.filter((v) => v.kind !== "manga" && selectedVideoIds.has(v.id));
     if (picked.length === 0) return;
     setQueue((prev) => {
       const existingIds = new Set(prev.map((v) => v.id));
@@ -658,12 +825,41 @@ export default function VaultStreamApp() {
       setLoading(true);
       setError(null);
       try {
+        let keyToUse = existingKey;
+
+        // 0.1s Instant Boot: restore VaultConfig + IndexedDB library BEFORE hitting network!
+        if (!forceFullScan) {
+          const [cachedCfg, cachedItems] = await Promise.all([
+            Promise.resolve(loadCachedVaultConfig(cleanFolderId)),
+            loadCachedVideoListAsync<VaultVideoItem>(cleanFolderId),
+          ]);
+          if (cachedCfg && !keyToUse) {
+            const savedPass = loadSavedPassphrase();
+            if (savedPass) {
+              try {
+                keyToUse = await unlockVaultWithPassphrase(savedPass, cachedCfg);
+                setVaultConfig(cachedCfg);
+                setMasterKey(keyToUse);
+              } catch {
+                // Fall back to fresh inspectVaultRoot below if vault.json changed
+                keyToUse = null;
+              }
+            }
+          } else if (cachedCfg) {
+            setVaultConfig((prev) => prev ?? cachedCfg);
+          }
+          if (cachedItems && cachedItems.length > 0 && (!cachedCfg || keyToUse)) {
+            setVideos((prev) => (prev.length === 0 ? cachedItems : prev));
+            setLoading(false);
+          }
+        }
+
         // Single root inspection call (replaces 3 separate root listings!)
         const snapshot = await inspectVaultRoot(cleanFolderId, token);
         const cfg = snapshot.vaultConfig;
         setVaultConfig(cfg);
+        saveCachedVaultConfig(cleanFolderId, cfg);
 
-        let keyToUse = existingKey;
         if (cfg && !keyToUse) {
           const savedPass = loadSavedPassphrase();
           if (savedPass) {
@@ -681,14 +877,6 @@ export default function VaultStreamApp() {
             setVideos([]);
             setLoading(false);
             return;
-          }
-        }
-
-        // Instant paint from local cache while refreshing from Drive index
-        if (!forceFullScan) {
-          const cached = loadCachedVideoList(cleanFolderId) as VaultVideoItem[] | null;
-          if (cached && cached.length > 0) {
-            setVideos((prev) => (prev.length === 0 ? cached : prev));
           }
         }
 
@@ -790,27 +978,73 @@ export default function VaultStreamApp() {
     [scheduleCloudSync]
   );
 
-  // Restore local state & saved OAuth session on mount
+  // Restore local state, URL #autoconfig= auto-provisioning & saved OAuth session on mount
   useEffect(() => {
     setProgressMap(loadAllProgress());
     setUserData(loadLocalUserData());
 
-    const savedClient = getSavedClientIdOverride();
-    const savedFolder = getSavedFolderIdOverride();
-    const resolvedFolder = savedFolder || ENV_FOLDER_ID;
-    if (savedClient) setClientId(savedClient);
-    if (savedFolder) setFolderId(savedFolder);
+    let resolvedClient = getSavedClientIdOverride() || ENV_CLIENT_ID;
+    let resolvedFolder = getSavedFolderIdOverride() || ENV_FOLDER_ID;
+    let autoConfiguredFromUrl = false;
+
+    const rawHash = window.location.hash || "";
+    const autoMatch = rawHash.match(/#autoconfig=([^&]+)/);
+    const searchParams = new URLSearchParams(window.location.search);
+    const urlAuto = autoMatch ? decodeAutoConfigHash(autoMatch[1]) : {};
+    const queryClient = searchParams.get("client_id");
+    const queryFolder = searchParams.get("folder_id");
+
+    const incomingClient = urlAuto.clientId || queryClient?.trim() || "";
+    const incomingFolder = urlAuto.folderId || (queryFolder ? extractFolderIdFromInput(queryFolder) : "");
+
+    if (incomingClient && isValidClientId(incomingClient)) {
+      setSavedClientIdOverride(incomingClient);
+      resolvedClient = incomingClient;
+      setDraftClientId(incomingClient);
+      autoConfiguredFromUrl = true;
+    }
+    if (incomingFolder) {
+      setSavedFolderIdOverride(incomingFolder);
+      resolvedFolder = incomingFolder;
+      setDraftFolderId(incomingFolder);
+      autoConfiguredFromUrl = true;
+    }
+    if (autoMatch) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+
+    setClientId(resolvedClient);
+    setFolderId(resolvedFolder);
+    if (!isValidClientId(resolvedClient)) {
+      setAutoSetupOpen(true);
+    }
+    if (autoConfiguredFromUrl) {
+      setSetupWizardNotice("URL から接続設定を自動取り込みしました！下のログインボタンから開始できます。");
+      showQueueToast("URL から接続設定を自動設定しました！");
+    }
 
     const savedAuth = loadAuthSession();
-    if (savedAuth && resolvedFolder) {
+    if (savedAuth) {
       setAccessToken(savedAuth.accessToken);
-      loadLibrary(savedAuth.accessToken, resolvedFolder);
+      if (resolvedFolder) {
+        loadLibrary(savedAuth.accessToken, resolvedFolder);
+      } else {
+        findOrCreateRootVaultFolder(savedAuth.accessToken)
+          .then((ensured) => {
+            setSavedFolderIdOverride(ensured.id);
+            setFolderId(ensured.id);
+            setDraftFolderId(ensured.id);
+            return loadLibrary(savedAuth.accessToken, ensured.id);
+          })
+          .catch(() => undefined);
+      }
     }
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register(`${BASE_PATH}/sw.js`).catch(() => undefined);
     }
-  }, [loadLibrary]);
+    requestPersistentStorage().catch(() => undefined);
+  }, [loadLibrary, showQueueToast]);
 
   const effectiveClientIdValid = isValidClientId(clientId);
   const effectiveFolderIdValid = folderId.trim().length > 0;
@@ -819,6 +1053,7 @@ export default function VaultStreamApp() {
     if (!effectiveClientIdValid) {
       setDraftClientId(isValidClientId(clientId) ? clientId : "");
       setDraftFolderId(folderId);
+      setAutoSetupOpen(true);
       setSettingsOpen(true);
       return;
     }
@@ -832,7 +1067,20 @@ export default function VaultStreamApp() {
       );
       saveAuthSession(token, expiresAt);
       setAccessToken(token);
-      await loadLibrary(token, folderId, masterKey);
+      let targetFolder = folderId.trim();
+      if (!targetFolder) {
+        const ensured = await findOrCreateRootVaultFolder(token);
+        targetFolder = ensured.id;
+        setSavedFolderIdOverride(targetFolder);
+        setFolderId(targetFolder);
+        setDraftFolderId(targetFolder);
+        showQueueToast(
+          ensured.created
+            ? `Google Drive に専用フォルダ「${ensured.name}」を自動作成しました！`
+            : `既存の Vault フォルダ「${ensured.name}」を自動検出しました！`
+        );
+      }
+      await loadLibrary(token, targetFolder, masterKey);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Google ログインに失敗しました。"
@@ -852,6 +1100,7 @@ export default function VaultStreamApp() {
     clearMangaPageCache();
     clearSegmentCache();
     clearCachedVideoList(folderId);
+    clearCachedVaultConfig(folderId);
     syncFileIdRef.current = null;
     setAccessToken(null);
     setVaultConfig(null);
@@ -893,6 +1142,7 @@ export default function VaultStreamApp() {
     clearMangaPageCache();
     clearSegmentCache();
     clearCachedVideoList(folderId);
+    clearCachedVaultConfig(folderId);
     setMasterKey(null);
     setVideos([]);
     setQueue([]);
@@ -926,6 +1176,196 @@ export default function VaultStreamApp() {
     setSettingsOpen(false);
     setError(null);
   };
+
+  const currentOrigin = typeof window !== "undefined" ? window.location.origin : "";
+  const currentAppUrl =
+    typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
+
+  const applyAutoSetupText = useCallback(
+    (raw: string, sourceLabel: string): boolean => {
+      const parsed = parseAutoSetupPayload(raw);
+      let applied = false;
+      const notices: string[] = [];
+
+      if (parsed.clientId && isValidClientId(parsed.clientId)) {
+        setSavedClientIdOverride(parsed.clientId);
+        setClientId(parsed.clientId);
+        setDraftClientId(parsed.clientId);
+        setError(null);
+        applied = true;
+        if (
+          parsed.origins &&
+          parsed.origins.length > 0 &&
+          typeof window !== "undefined" &&
+          !parsed.origins.includes(window.location.origin)
+        ) {
+          notices.push(
+            `クライアント ID を${sourceLabel}から自動設定しました（※ Google Cloud の「承認済みの JavaScript 生成元」に ${window.location.origin} も登録されているか確認してください）。`
+          );
+        } else {
+          notices.push(`クライアント ID を${sourceLabel}から自動設定しました！`);
+        }
+      }
+
+      if (parsed.folderId) {
+        setSavedFolderIdOverride(parsed.folderId);
+        setFolderId(parsed.folderId);
+        setDraftFolderId(parsed.folderId);
+        applied = true;
+        notices.push(`Google Drive フォルダ ID を${sourceLabel}から設定しました！`);
+      }
+
+      if (applied) {
+        const msg = notices.join(" ");
+        setSetupWizardNotice(msg);
+        showQueueToast(msg);
+      }
+      return applied;
+    },
+    [showQueueToast]
+  );
+
+  const handleOAuthJsonUpload = useCallback(
+    async (file: File) => {
+      try {
+        const text = await file.text();
+        const ok = applyAutoSetupText(text, `ファイル「${file.name}」`);
+        if (!ok) {
+          setSetupWizardNotice(
+            "選択された JSON から OAuth クライアント ID が見つかりませんでした。Google Cloud で「ウェブ アプリケーション」用の JSON をダウンロードしているか確認してください。"
+          );
+        }
+      } catch {
+        setSetupWizardNotice("JSON ファイルの読み込みに失敗しました。");
+      }
+    },
+    [applyAutoSetupText]
+  );
+
+  const handleReadClipboardSetup = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!applyAutoSetupText(text, "クリップボード")) {
+        setSetupWizardNotice(
+          "クリップボードから *.apps.googleusercontent.com や JSON が見つかりませんでした。コピーしてからもう一度押してください。"
+        );
+      }
+    } catch {
+      setSetupWizardNotice(
+        "ブラウザのクリップボード許可が必要です。このまま画面上で Ctrl+V（または Cmd+V）で貼り付けると自動で読み取ります。"
+      );
+    }
+  }, [applyAutoSetupText]);
+
+  const handleCopyCurrentOrigin = useCallback(async () => {
+    if (!currentOrigin) return;
+    try {
+      await navigator.clipboard.writeText(currentOrigin);
+      showQueueToast(`生成元 URL（${currentOrigin}）をコピーしました！`);
+    } catch {
+      // ignore clipboard errors
+    }
+  }, [currentOrigin, showQueueToast]);
+
+  const handleCopyCloudShellCommand = useCallback(async () => {
+    const origin = currentOrigin || "https://hiyasitomato.github.io";
+    const appUrl = currentAppUrl || "https://hiyasitomato.github.io/vaultstream/";
+    const cmd = [
+      'PID=$(gcloud projects list --filter="projectId:vaultstream-*" --format="value(projectId)" --limit=1)',
+      '{ [ -n "$PID" ] || { PID="vaultstream-$(date +%s | tail -c 6)" && gcloud projects create "$PID" --name="VaultStream"; }; }',
+      'gcloud config set project "$PID" && gcloud services enable drive.googleapis.com',
+      'echo "" && echo "✅ Drive API 自動有効化完了 (Project: $PID)"',
+      'echo "1. テストユーザーに自分のGmailを追加:"',
+      'echo "   https://console.cloud.google.com/auth/audience?project=$PID"',
+      `echo "2. 承認済みJS生成元に [${origin}] を入力してWebクライアント作成:"`,
+      'echo "   https://console.cloud.google.com/auth/clients/create?project=$PID"',
+      'read -rp "3. 作成したクライアントIDを貼り付けてEnter: " CID',
+      'B64=$(printf \'{"c":"%s"}\' "$CID" | base64 | tr -d \'\\n\')',
+      `echo "🎉 完了！このリンクを開くと自動設定されます: ${appUrl}#autoconfig=$B64"`,
+    ].join(" && ");
+
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setSetupWizardNotice(
+        "Cloud Shell 自動セットアップコマンドをコピーしました！開いたターミナルに貼り付けて Enter を押すだけでプロジェクト作成＆Drive API有効化＆自動設定リンク生成まで一括で進みます。"
+      );
+      showQueueToast("Cloud Shell コマンドをコピーしました！");
+    } catch {
+      setSetupWizardNotice("Cloud Shell を開きました。Google Cloud コンソールの各ステップボタンでも設定できます。");
+    }
+    window.open("https://shell.cloud.google.com/?show=terminal", "_blank", "noopener,noreferrer");
+  }, [currentAppUrl, currentOrigin, showQueueToast]);
+
+  const copyAutoConfigLink = useCallback(
+    async (rawClientId: string, rawFolderId: string) => {
+      const cid = rawClientId.trim();
+      const fid = extractFolderIdFromInput(rawFolderId);
+      if (!currentAppUrl || !isValidClientId(cid)) {
+        showQueueToast("先に OAuth クライアント ID を設定してください");
+        return;
+      }
+      const url = `${currentAppUrl}#autoconfig=${encodeURIComponent(
+        encodeAutoConfigPayload(cid, fid)
+      )}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        showQueueToast("他端末（iPhone・iPad 等）用の 1タップ自動設定リンクをコピーしました！");
+      } catch {
+        showQueueToast("リンクのコピーに失敗しました");
+      }
+    },
+    [currentAppUrl, showQueueToast]
+  );
+
+  const handleAutoSetupDriveFolder = useCallback(async () => {
+    if (!accessToken && !isValidClientId(clientId)) {
+      setSetupWizardNotice("先に Web 用 OAuth クライアント ID を設定してください。");
+      return;
+    }
+    setAutoSetupBusy(true);
+    try {
+      let token = accessToken;
+      if (!token) {
+        const res = await requestGoogleAccessToken(clientId.trim(), "select_account");
+        token = res.accessToken;
+        saveAuthSession(res.accessToken, res.expiresAt);
+        setAccessToken(res.accessToken);
+      }
+      const ensured = await findOrCreateRootVaultFolder(token);
+      setSavedFolderIdOverride(ensured.id);
+      setFolderId(ensured.id);
+      setDraftFolderId(ensured.id);
+      const msg = ensured.created
+        ? `Google Drive に「${ensured.name}」フォルダを自動作成しました！`
+        : `Google Drive の既存フォルダ「${ensured.name}」を自動検出しました！`;
+      setSetupWizardNotice(msg);
+      showQueueToast(msg);
+      await loadLibrary(token, ensured.id, masterKey);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "フォルダの自動作成・検出に失敗しました。";
+      setSetupWizardNotice(msg);
+    } finally {
+      setAutoSetupBusy(false);
+    }
+  }, [accessToken, clientId, loadLibrary, masterKey, showQueueToast]);
+
+  // Global paste detector during onboarding / settings so pasted OAuth Client ID, JSON, or Drive URLs apply automatically
+  useEffect(() => {
+    if (accessToken && !settingsOpen) return;
+    const onPaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text");
+      if (!text) return;
+      if (
+        text.includes(".apps.googleusercontent.com") ||
+        text.includes('"client_id"') ||
+        text.includes("drive.google.com/drive/folders/")
+      ) {
+        applyAutoSetupText(text, "貼り付けデータ");
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [accessToken, settingsOpen, applyAutoSetupText]);
 
   const handleVideosUploaded = useCallback(
     (newItems: VaultVideoItem[]) => {
@@ -1058,19 +1498,118 @@ export default function VaultStreamApp() {
     [updateUserData]
   );
 
-  const handleSeedDefaultGenres = useCallback(() => {
+  // 1-Tap "Expand Anime Genres & Auto-Classify":
+  // 1. Seeds all rich anime sub-genres into customGenres
+  // 2. Inherits existing series genres across episodes of the same anime series
+  // 3. Applies keyword matching (title + filename) onto all anime videos and syncs to Drive
+  const handleAutoEnrichAnimeGenres = useCallback(() => {
+    let newGenreCount = 0;
+    let updatedVideoCount = 0;
+    let totalAddedTags = 0;
+
     updateUserData((prev) => {
-      const existing = new Set(prev.customGenres.map((g) => g.name));
-      const additions = DEFAULT_CUSTOM_GENRES.filter((g) => !existing.has(g.name));
-      if (additions.length === 0) return prev;
+      const now = Date.now();
+      const existingNames = new Set(prev.customGenres.map((g) => g.name));
+      const genreAdditions = DEFAULT_CUSTOM_GENRES.filter((g) => !existingNames.has(g.name));
+      newGenreCount = genreAdditions.length;
+      const mergedCustom = [...prev.customGenres, ...genreAdditions];
+      const allowedSet = new Set(mergedCustom.map((g) => g.name));
+
+      const isAnimeItem = (v: VaultVideoItem): boolean => {
+        if (v.kind === "manga") return false;
+        const m = prev.videoMeta[v.id];
+        const added = new Set(m?.addedGenres ?? []);
+        return !added.has("現実");
+      };
+
+      // Build series-level inheritance map from already-tagged episodes
+      const seriesTags = new Map<string, Set<string>>();
+      for (const v of videos) {
+        if (!isAnimeItem(v)) continue;
+        const normKey = normalizeCrossMediaTitle(v.title);
+        if (normKey.length < 3) continue;
+        const m = prev.videoMeta[v.id];
+        for (const g of m?.addedGenres ?? []) {
+          const clean = g.trim();
+          if (clean && !CATEGORY_TAG_SET.has(clean) && clean !== "神回・お気に入り") {
+            let set = seriesTags.get(normKey);
+            if (!set) {
+              set = new Set<string>();
+              seriesTags.set(normKey, set);
+            }
+            set.add(clean);
+          }
+        }
+      }
+
+      const nextMeta: Record<string, VideoUserMeta> = { ...prev.videoMeta };
+      for (const v of videos) {
+        const isManga = v.kind === "manga";
+        if (!isManga && !isAnimeItem(v)) continue;
+        const cur = nextMeta[v.id] ?? {};
+        const added = new Set(cur.addedGenres ?? []);
+        const removed = new Set(cur.removedGenres ?? []);
+        let addedForVideo = 0;
+
+        const primaryCat = isManga ? "漫画" : "アニメ";
+        if (!added.has(primaryCat) && !removed.has(primaryCat)) {
+          added.add(primaryCat);
+          addedForVideo += 1;
+        }
+
+        if (!isManga) {
+          const normKey = normalizeCrossMediaTitle(v.title);
+          if (normKey.length >= 3) {
+            const inherited = seriesTags.get(normKey);
+            if (inherited) {
+              for (const g of inherited) {
+                if (!added.has(g) && !removed.has(g)) {
+                  added.add(g);
+                  addedForVideo += 1;
+                }
+              }
+            }
+          }
+        }
+
+        for (const g of extractAutoGenres(v, allowedSet)) {
+          if (!added.has(g) && !removed.has(g) && !CATEGORY_TAG_SET.has(g)) {
+            added.add(g);
+            addedForVideo += 1;
+          }
+        }
+
+        if (addedForVideo > 0) {
+          updatedVideoCount += 1;
+          totalAddedTags += addedForVideo;
+          nextMeta[v.id] = {
+            ...cur,
+            addedGenres: Array.from(added),
+            updatedAt: now,
+          };
+        }
+      }
+
+      if (newGenreCount === 0 && updatedVideoCount === 0) {
+        return prev;
+      }
+
       return {
         ...prev,
-        customGenresUpdatedAt: Date.now(),
-        customGenres: [...prev.customGenres, ...additions],
+        customGenresUpdatedAt: newGenreCount > 0 ? now : prev.customGenresUpdatedAt,
+        customGenres: mergedCustom,
+        videoMeta: nextMeta,
       };
     });
-    showQueueToast("定番ジャンル一覧を追加しました！");
-  }, [updateUserData, showQueueToast]);
+
+    if (newGenreCount === 0 && updatedVideoCount === 0) {
+      showQueueToast("アニメジャンルと自動振り分けはすでに最新です");
+    } else {
+      showQueueToast(
+        `新ジャンル +${newGenreCount} 件 / アニメ ${updatedVideoCount} 本に計 ${totalAddedTags} 件を自動付与しました！`
+      );
+    }
+  }, [videos, updateUserData, showQueueToast]);
 
   // 1-click lossless recovery from Google Drive's encrypted user_meta.enc revision history!
   const handleRestoreGenresFromHistory = useCallback(async () => {
@@ -1312,6 +1851,14 @@ export default function VaultStreamApp() {
         } else {
           removed.delete(genre);
           added.add(genre);
+          // Keep 現実 and アニメ mutually exclusive when switching categories
+          if (genre === "現実") {
+            added.delete("アニメ");
+            removed.add("アニメ");
+          } else if (genre === "アニメ") {
+            added.delete("現実");
+            removed.add("現実");
+          }
         }
 
         const hasInCustom = prev.customGenres.some((g) => g.name === genre);
@@ -1448,15 +1995,110 @@ export default function VaultStreamApp() {
         counts.set(g, (counts.get(g) ?? 0) + 1);
       }
     }
-    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  }, [videos, videoGenresMap, customGenres, categoryTab]);
+    return Array.from(counts.entries())
+      .filter(([genre, count]) => count > 0 || selectedGenres.includes(genre))
+      .sort((a, b) => b[1] - a[1]);
+  }, [videos, videoGenresMap, customGenres, categoryTab, selectedGenres]);
+
+  const homeGroupCounts = useMemo(() => {
+    const map = new Map<GenreGroupId, number>();
+    for (const tab of GENRE_GROUP_TABS) map.set(tab.id, 0);
+    for (const [genre] of genreCounts) {
+      if (CATEGORY_TAG_SET.has(genre)) continue;
+      for (const tab of GENRE_GROUP_TABS) {
+        if (matchesGenreGroup(genre, tab.id)) {
+          map.set(tab.id, (map.get(tab.id) ?? 0) + 1);
+        }
+      }
+    }
+    return map;
+  }, [genreCounts]);
+
+  const homeScopedGenres = useMemo(() => {
+    return genreCounts.filter(
+      ([genre]) =>
+        !CATEGORY_TAG_SET.has(genre) && matchesGenreGroup(genre, homeGenreGroup)
+    );
+  }, [genreCounts, homeGenreGroup]);
+
+  const visibleHomeGenreChips = useMemo(() => {
+    if (homeGenreExpanded || homeScopedGenres.length <= 16) {
+      return homeScopedGenres;
+    }
+    const top16 = homeScopedGenres.slice(0, 16);
+    const topSet = new Set(top16.map(([g]) => g));
+    const extras = homeScopedGenres.filter(
+      ([g]) => !topSet.has(g) && selectedGenres.includes(g)
+    );
+    return [...top16, ...extras];
+  }, [homeGenreExpanded, homeScopedGenres, selectedGenres]);
+
+  const sidebarGenreList = useMemo(() => {
+    const q = sidebarGenreSearch.trim().toLowerCase();
+    return genreCounts.filter(([genre]) => {
+      if (CATEGORY_TAG_SET.has(genre)) return false;
+      if (q) return genre.toLowerCase().includes(q);
+      return sidebarGenreMode === "credits"
+        ? isCreatorOrStudioGenre(genre)
+        : !isCreatorOrStudioGenre(genre);
+    });
+  }, [genreCounts, sidebarGenreMode, sidebarGenreSearch]);
 
   const uncategorizedCount = useMemo(
     () =>
-      videos.filter((v) => getContentGenresOnly(videoGenresMap[v.id] ?? []).length === 0)
+      videos.filter((v) => getContentGenresOnly(videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY).length === 0)
         .length,
     [videos, videoGenresMap]
   );
+
+  // Total counts across ALL categories (O(V) memoized for instant ジャンル tab switching)
+  const allGenreCountsMap = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const v of videos) {
+      for (const g of videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY) {
+        counts.set(g, (counts.get(g) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [videos, videoGenresMap]);
+
+  const manageGroupCounts = useMemo(() => {
+    const map = new Map<GenreGroupId, number>();
+    for (const tab of GENRE_GROUP_TABS) map.set(tab.id, 0);
+    for (const cg of customGenres) {
+      if (hideZeroGenres && (allGenreCountsMap.get(cg.name) ?? 0) === 0) continue;
+      for (const tab of GENRE_GROUP_TABS) {
+        if (matchesGenreGroup(cg.name, tab.id)) {
+          map.set(tab.id, (map.get(tab.id) ?? 0) + 1);
+        }
+      }
+    }
+    return map;
+  }, [customGenres, hideZeroGenres, allGenreCountsMap]);
+
+  const filteredManageGenres = useMemo(() => {
+    const q = manageGenreSearch.trim().toLowerCase();
+    return customGenres.filter((cg) => {
+      if (hideZeroGenres && (allGenreCountsMap.get(cg.name) ?? 0) === 0) {
+        return false;
+      }
+      if (q) {
+        return cg.name.toLowerCase().includes(q);
+      }
+      return matchesGenreGroup(cg.name, manageGenreGroup);
+    });
+  }, [customGenres, hideZeroGenres, allGenreCountsMap, manageGenreSearch, manageGenreGroup]);
+
+  const filteredBulkGenres = useMemo(() => {
+    const q = bulkGenreSearch.trim().toLowerCase();
+    return customGenres.filter((cg) => {
+      if (CATEGORY_TAG_SET.has(cg.name)) return false;
+      if (q) {
+        return cg.name.toLowerCase().includes(q);
+      }
+      return matchesGenreGroup(cg.name, bulkGenreGroup);
+    });
+  }, [customGenres, bulkGenreSearch, bulkGenreGroup]);
 
   const toggleGenreSelection = useCallback((genre: string) => {
     setOnlyUncategorized(false);
@@ -1476,10 +2118,7 @@ export default function VaultStreamApp() {
     setSearchQuery("");
     setSelectedGenres([]);
     setOnlyUncategorized(false);
-    setDurationFilter("all");
-    setQualityFilter("all");
-    setWatchFilter("all");
-    setSortMode("random");
+    setSortMode("recommended");
     reshuffleHome();
   };
 
@@ -1507,10 +2146,10 @@ export default function VaultStreamApp() {
   const activeFilterCount =
     (categoryTab !== "all" ? 1 : 0) +
     selectedGenres.length +
-    (onlyUncategorized ? 1 : 0) +
-    (durationFilter !== "all" ? 1 : 0) +
-    (qualityFilter !== "all" ? 1 : 0) +
-    (watchFilter !== "all" ? 1 : 0);
+    (onlyUncategorized ? 1 : 0);
+
+  // Automatic local Manga <-> Anime title pairing (zero external API calls)
+  const crossMedia = useMemo(() => buildCrossMediaIndex(videos), [videos]);
 
   // Continue watching rail (YouTube style)
   const continueWatchingVideos = useMemo(() => {
@@ -1528,6 +2167,307 @@ export default function VaultStreamApp() {
       .slice(0, 10);
   }, [videos, progressMap]);
 
+  // YouTube-style personalized recommendation ranker (uses recProgressSnapshot so playback doesn't thrash Home)
+  const recommendationData = useMemo(() => {
+    const rankById = new Map<string, number>();
+    const reasonById = new Map<string, string>();
+    if (videos.length === 0) {
+      return { rankById, reasonById, ranked: [] as VaultVideoItem[] };
+    }
+
+    const nowMs = Date.now();
+    const totalCount = videos.length;
+    const genreDocFreq = new Map<string, number>();
+    const tagsById = new Map<string, string[]>();
+    const seriesKeyById = new Map<string, string>();
+
+    for (const v of videos) {
+      const tags = videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY;
+      tagsById.set(v.id, tags);
+      for (const g of tags) {
+        if (!CATEGORY_TAG_SET.has(g)) {
+          genreDocFreq.set(g, (genreDocFreq.get(g) ?? 0) + 1);
+        }
+      }
+      seriesKeyById.set(v.id, normalizeCrossMediaTitle(v.title) || v.id);
+    }
+
+    // 1. Build taste affinity profile from favorites, watch completion, recency, repeat plays, custom thumbnails
+    const rawGenreAffinity = new Map<string, number>();
+    const seriesAffinity = new Map<string, number>();
+    const linkedEngagedIds = new Set<string>();
+    const catAffinity = { anime: 0, manga: 0, real: 0 };
+
+    for (const v of videos) {
+      const meta = userMetaMap[v.id];
+      const prog = recProgressSnapshot[v.id];
+      const tags = tagsById.get(v.id) ?? EMPTY_STRING_ARRAY;
+      const isFav = Boolean(meta?.favorite);
+      const isMasterpiece = tags.includes("神回・お気に入り");
+      const hasCustomThumb = meta?.thumbnailTimeSec !== undefined;
+
+      const ratio =
+        prog && prog.duration > 0
+          ? Math.min(1, Math.max(0, prog.currentTime / prog.duration))
+          : prog && prog.currentTime > 10
+            ? 0.45
+            : 0;
+
+      let signal = 0;
+      if (isFav) signal += 5.5;
+      if (isMasterpiece) signal += 3.5;
+      if (hasCustomThumb) signal += 1.2;
+
+      if (prog && (prog.currentTime > 3 || (prog.playCount ?? 0) > 0)) {
+        const ageDays = prog.updatedAt
+          ? Math.max(0, (nowMs - prog.updatedAt) / 86400000)
+          : 30;
+        const decay = Math.max(0.25, Math.exp(-ageDays / 21));
+        if (ratio >= 0.75) signal += 4.2 * decay;
+        else if (ratio >= 0.25) signal += 2.4 * decay;
+        else signal += 0.8 * decay;
+
+        const plays = prog.playCount ?? 1;
+        if (plays > 1) {
+          signal += Math.min(4.0, (plays - 1) * 1.4) * decay;
+        }
+      }
+
+      if (signal <= 0) continue;
+
+      linkedEngagedIds.add(v.id);
+      const sk = seriesKeyById.get(v.id) ?? v.id;
+      const prevSeries = seriesAffinity.get(sk) ?? 0;
+      if (signal > prevSeries) seriesAffinity.set(sk, signal);
+
+      if (v.kind === "manga" || tags.includes("漫画")) {
+        catAffinity.manga += signal;
+      } else if (tags.includes("現実")) {
+        catAffinity.real += signal;
+      } else {
+        catAffinity.anime += signal;
+      }
+
+      for (const g of tags) {
+        if (CATEGORY_TAG_SET.has(g) || g === "神回・お気に入り") continue;
+        const creatorMult = isCreatorOrStudioGenre(g) ? 1.4 : 1.0;
+        rawGenreAffinity.set(g, (rawGenreAffinity.get(g) ?? 0) + signal * creatorMult);
+      }
+    }
+
+    // Apply TF-IDF weighting so niche tags, authors, and studios stand out over ultra-common tags
+    const idfGenreScore = new Map<string, number>();
+    for (const [g, raw] of rawGenreAffinity.entries()) {
+      const df = genreDocFreq.get(g) ?? 1;
+      const idf = Math.log(1 + totalCount / Math.max(1, df));
+      idfGenreScore.set(g, raw * idf);
+    }
+
+    let maxRawMatch = 0;
+    for (const v of videos) {
+      const tags = tagsById.get(v.id) ?? EMPTY_STRING_ARRAY;
+      const contributions: number[] = [];
+      for (const g of tags) {
+        const w = idfGenreScore.get(g);
+        if (w) contributions.push(w);
+      }
+      contributions.sort((a, b) => b - a);
+      const topSum = contributions.slice(0, 4).reduce((s, x) => s + x, 0);
+      if (topSum > maxRawMatch) maxRawMatch = topSum;
+    }
+
+    const maxCatAff = Math.max(catAffinity.anime, catAffinity.manga, catAffinity.real);
+
+    // 2. Score every library item
+    const rawScored: Array<{
+      item: VaultVideoItem;
+      score: number;
+      reason: string;
+      seriesKey: string;
+    }> = [];
+
+    for (const v of videos) {
+      const meta = userMetaMap[v.id];
+      const prog = recProgressSnapshot[v.id];
+      const tags = tagsById.get(v.id) ?? EMPTY_STRING_ARRAY;
+      const sk = seriesKeyById.get(v.id) ?? v.id;
+      const isFav = Boolean(meta?.favorite);
+      const isMasterpiece = tags.includes("神回・お気に入り");
+      const hasCustomThumb = meta?.thumbnailTimeSec !== undefined;
+
+      const ratio =
+        prog && prog.duration > 0
+          ? Math.min(1, Math.max(0, prog.currentTime / prog.duration))
+          : prog && prog.currentTime > 10
+            ? 0.45
+            : 0;
+      const isUnwatched = !prog || prog.currentTime <= 3;
+      const isFinished =
+        ratio >= 0.85 ||
+        (prog ? prog.duration > 0 && prog.currentTime >= prog.duration - 10 : false);
+      const isInProgress = !isUnwatched && !isFinished;
+      const hoursSinceWatch = prog?.updatedAt ? (nowMs - prog.updatedAt) / 3600000 : Infinity;
+
+      let bestCreatorTag: { tag: string; w: number } | null = null;
+      let bestNormalTag: { tag: string; w: number } | null = null;
+      const contribVals: number[] = [];
+      for (const g of tags) {
+        const w = idfGenreScore.get(g) ?? 0;
+        if (w <= 0) continue;
+        contribVals.push(w);
+        if (isCreatorOrStudioGenre(g)) {
+          if (!bestCreatorTag || w > bestCreatorTag.w) bestCreatorTag = { tag: g, w };
+        } else {
+          if (!bestNormalTag || w > bestNormalTag.w) bestNormalTag = { tag: g, w };
+        }
+      }
+      contribVals.sort((a, b) => b - a);
+      const matchSum = contribVals.slice(0, 4).reduce((s, x) => s + x, 0);
+      const tastePts = maxRawMatch > 0 ? (matchSum / maxRawMatch) * 48 : 0;
+
+      const seriesBest = seriesAffinity.get(sk) ?? 0;
+      const linkedList = crossMedia.linkedById[v.id];
+      const hasLinkedEngaged = linkedList
+        ? linkedList.some((li) => linkedEngagedIds.has(li.id))
+        : false;
+      let seriesPts = 0;
+      if (!isFinished && seriesBest >= 2.2) seriesPts = 18;
+      else if (!isFinished && hasLinkedEngaged) seriesPts = 14;
+
+      let catPts = 0;
+      if (maxCatAff > 0) {
+        const cVal =
+          v.kind === "manga" || tags.includes("漫画")
+            ? catAffinity.manga
+            : tags.includes("現実")
+              ? catAffinity.real
+              : catAffinity.anime;
+        catPts = (cVal / maxCatAff) * 5;
+      }
+
+      let watchStatePts = 0;
+      if (isUnwatched) {
+        watchStatePts = 14;
+      } else if (isInProgress) {
+        watchStatePts = 8;
+      } else if (isFinished) {
+        if (hoursSinceWatch < 24 && !isFav) watchStatePts = -28;
+        else if (hoursSinceWatch < 336 && !isFav) watchStatePts = -14;
+        else if (isFav || isMasterpiece) watchStatePts = hoursSinceWatch < 12 ? -8 : 11;
+        else watchStatePts = -6;
+      }
+
+      let qualityPts = 0;
+      if (isFav && hoursSinceWatch >= 12) qualityPts += 8;
+      if (isMasterpiece && hoursSinceWatch >= 12) qualityPts += 7;
+      if (hasCustomThumb) qualityPts += 2.5;
+      if (getContentGenresOnly(tags).length >= 2) qualityPts += 3;
+
+      const createdMs = new Date(v.createdAt).getTime();
+      const ageCreatedDays = Number.isFinite(createdMs)
+        ? Math.max(0, (nowMs - createdMs) / 86400000)
+        : 999;
+      const freshnessPts =
+        ageCreatedDays <= 7
+          ? 10 * (1 - ageCreatedDays / 7)
+          : ageCreatedDays <= 30
+            ? 4 * (1 - (ageCreatedDays - 7) / 23)
+            : 0;
+
+      const jitterPts = ((seededOrderHash(v.id, homeShuffleSeed) % 1000) / 1000) * 11;
+
+      const totalScore =
+        tastePts + seriesPts + catPts + watchStatePts + qualityPts + freshnessPts + jitterPts;
+
+      let reason = "おすすめピックアップ";
+      if (seriesPts >= 18) {
+        reason = "シリーズ続編・関連";
+      } else if (seriesPts >= 14) {
+        reason = v.kind === "manga" ? "視聴アニメの原作" : "漫画のアニメ版";
+      } else if (bestCreatorTag && tastePts >= 12) {
+        const shortCreator = bestCreatorTag.tag.replace(/^(制作|作者|ブランド|サークル):/, "");
+        reason = `注目: ${shortCreator}`;
+      } else if (bestNormalTag && tastePts >= 10) {
+        reason = `好み: #${bestNormalTag.tag}`;
+      } else if ((isFav || isMasterpiece) && hoursSinceWatch >= 12) {
+        reason = isMasterpiece ? "神回・お気に入り" : "お気に入り再注目";
+      } else if (ageCreatedDays <= 7) {
+        reason = "新着おすすめ";
+      } else if (isUnwatched) {
+        reason = "未視聴の発掘";
+      }
+
+      rawScored.push({ item: v, score: totalScore, reason, seriesKey: sk });
+    }
+
+    rawScored.sort((a, b) => b.score - a.score);
+
+    // 3. Apply greedy series-diversity spacing to top 120 so multiple episodes of one series never clump
+    const topPoolSize = Math.min(120, rawScored.length);
+    const pool = rawScored.slice(0, topPoolSize);
+    const remaining = rawScored.slice(topPoolSize);
+    const used = new Array<boolean>(topPoolSize).fill(false);
+    const placedSeriesCounts = new Map<string, number>();
+    const ranked: VaultVideoItem[] = [];
+
+    for (let step = 0; step < topPoolSize; step += 1) {
+      let bestIdx = -1;
+      let bestAdjusted = -Infinity;
+      for (let i = 0; i < topPoolSize; i += 1) {
+        if (used[i]) continue;
+        const cand = pool[i];
+        const priorCount = placedSeriesCounts.get(cand.seriesKey) ?? 0;
+        const adj = cand.score - priorCount * 16;
+        if (adj > bestAdjusted) {
+          bestAdjusted = adj;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx === -1) break;
+      used[bestIdx] = true;
+      const picked = pool[bestIdx];
+      placedSeriesCounts.set(picked.seriesKey, (placedSeriesCounts.get(picked.seriesKey) ?? 0) + 1);
+      rankById.set(picked.item.id, ranked.length);
+      reasonById.set(picked.item.id, picked.reason);
+      ranked.push(picked.item);
+    }
+
+    for (const tail of remaining) {
+      rankById.set(tail.item.id, ranked.length);
+      reasonById.set(tail.item.id, tail.reason);
+      ranked.push(tail.item);
+    }
+
+    return { rankById, reasonById, ranked };
+  }, [
+    videos,
+    videoGenresMap,
+    userMetaMap,
+    recProgressSnapshot,
+    crossMedia,
+    homeShuffleSeed,
+  ]);
+
+  const recommendedShelfItems = useMemo(() => {
+    if (recommendationData.ranked.length === 0) return [];
+    const cwIds = new Set(continueWatchingVideos.map((v) => v.id));
+    const matchesCategory = (v: VaultVideoItem) => {
+      if (categoryTab === "all") return true;
+      const tags = videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY;
+      if (categoryTab === "漫画") return v.kind === "manga" || tags.includes("漫画");
+      return v.kind !== "manga" && tags.includes(categoryTab);
+    };
+    const scoped = recommendationData.ranked.filter(matchesCategory);
+    const withoutCw = scoped.filter((v) => !cwIds.has(v.id));
+    return (withoutCw.length >= 6 ? withoutCw : scoped).slice(0, 12);
+  }, [recommendationData.ranked, continueWatchingVideos, categoryTab, videoGenresMap]);
+
+  // Only recompute filteredVideos on progress updates when the current view/sort depends on progress
+  const progressForFilter =
+    navSection === "history" || sortMode === "recent_played"
+      ? progressMap
+      : null;
+
   // Main filtered + sorted video list
   const filteredVideos = useMemo(() => {
     let list = [...videos];
@@ -1535,16 +2475,16 @@ export default function VaultStreamApp() {
     if (navSection === "favorites") {
       list = list.filter((v) => Boolean(userMetaMap[v.id]?.favorite));
     } else if (navSection === "history") {
-      list = list.filter((v) => Boolean(progressMap[v.id]?.updatedAt));
+      list = list.filter((v) => Boolean(progressForFilter?.[v.id]?.updatedAt));
     }
 
     if (categoryTab === "漫画") {
       list = list.filter(
-        (v) => v.kind === "manga" || (videoGenresMap[v.id] ?? []).includes("漫画")
+        (v) => v.kind === "manga" || (videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY).includes("漫画")
       );
     } else if (categoryTab !== "all") {
       list = list.filter(
-        (v) => v.kind !== "manga" && (videoGenresMap[v.id] ?? []).includes(categoryTab)
+        (v) => v.kind !== "manga" && (videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY).includes(categoryTab)
       );
     }
 
@@ -1558,7 +2498,7 @@ export default function VaultStreamApp() {
         const haystack = [
           v.title,
           v.sourceFileName ?? "",
-          ...(videoGenresMap[v.id] ?? []),
+          ...(videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY),
         ]
           .join(" ")
           .toLowerCase();
@@ -1572,11 +2512,13 @@ export default function VaultStreamApp() {
       });
     }
 
-    if (onlyUncategorized || watchFilter === "uncategorized") {
-      list = list.filter((v) => getContentGenresOnly(videoGenresMap[v.id] ?? []).length === 0);
+    if (onlyUncategorized) {
+      list = list.filter(
+        (v) => getContentGenresOnly(videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY).length === 0
+      );
     } else if (selectedGenres.length > 0) {
       list = list.filter((v) => {
-        const gList = videoGenresMap[v.id] ?? [];
+        const gList = videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY;
         if (genreMatchMode === "AND") {
           return selectedGenres.every((sel) => gList.includes(sel));
         }
@@ -1584,45 +2526,19 @@ export default function VaultStreamApp() {
       });
     }
 
-    if (durationFilter === "short") {
-      list = list.filter((v) => v.duration > 0 && v.duration < 300);
-    } else if (durationFilter === "medium") {
-      list = list.filter((v) => v.duration >= 300 && v.duration <= 1200);
-    } else if (durationFilter === "long") {
-      list = list.filter((v) => v.duration > 1200);
-    }
-
-    if (qualityFilter === "hd1080") {
-      list = list.filter((v) => (v.height ?? 0) >= 1080);
-    } else if (qualityFilter === "hd720") {
-      list = list.filter((v) => (v.height ?? 0) >= 720 && (v.height ?? 0) < 1080);
-    } else if (qualityFilter === "sd") {
-      list = list.filter((v) => (v.height ?? 0) > 0 && (v.height ?? 0) < 720);
-    }
-
-    if (watchFilter === "favorites") {
-      list = list.filter((v) => Boolean(userMetaMap[v.id]?.favorite));
-    } else if (watchFilter === "unwatched") {
-      list = list.filter((v) => !(progressMap[v.id]?.currentTime > 3));
-    } else if (watchFilter === "in_progress") {
-      list = list.filter((v) => {
-        const p = progressMap[v.id];
-        return p && p.currentTime > 3 && (p.duration <= 0 || p.currentTime < p.duration - 10);
-      });
-    } else if (watchFilter === "watched") {
-      list = list.filter((v) => {
-        const p = progressMap[v.id];
-        return p && p.duration > 0 && p.currentTime >= p.duration - 10;
-      });
-    }
-
     const effectiveSort: SortMode =
-      navSection === "history" && (sortMode === "newest" || sortMode === "random")
+      navSection === "history" &&
+      (sortMode === "recommended" || sortMode === "newest" || sortMode === "random")
         ? "recent_played"
         : sortMode;
 
     list.sort((a, b) => {
       switch (effectiveSort) {
+        case "recommended":
+          return (
+            (recommendationData.rankById.get(a.id) ?? 999999) -
+            (recommendationData.rankById.get(b.id) ?? 999999)
+          );
         case "random":
           return seededOrderHash(a.id, homeShuffleSeed) - seededOrderHash(b.id, homeShuffleSeed);
         case "oldest":
@@ -1639,7 +2555,8 @@ export default function VaultStreamApp() {
           return (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
         case "recent_played":
           return (
-            (progressMap[b.id]?.updatedAt ?? 0) - (progressMap[a.id]?.updatedAt ?? 0)
+            (progressForFilter?.[b.id]?.updatedAt ?? 0) -
+            (progressForFilter?.[a.id]?.updatedAt ?? 0)
           );
         case "newest":
         default:
@@ -1653,17 +2570,15 @@ export default function VaultStreamApp() {
     navSection,
     categoryTab,
     userMetaMap,
-    progressMap,
+    progressForFilter,
     searchQuery,
     videoGenresMap,
     onlyUncategorized,
     selectedGenres,
     genreMatchMode,
-    durationFilter,
-    qualityFilter,
-    watchFilter,
     sortMode,
     homeShuffleSeed,
+    recommendationData.rankById,
   ]);
 
   const totalLibraryBytes = useMemo(
@@ -1671,17 +2586,13 @@ export default function VaultStreamApp() {
     [videos]
   );
 
-  // Automatic local Manga <-> Anime title pairing (zero external API calls)
-  const crossMedia = useMemo(() => buildCrossMediaIndex(videos), [videos]);
-
-  // Gentle background low-priority thumbnail pre-warmer so fast swiping renders in 0ms
+  // Gentle background low-priority thumbnail pre-warmer (capped to 40 next items / 2 streams to keep iPad 60fps!)
   useEffect(() => {
     if (!accessToken || filteredVideos.length === 0) return;
-    // Pause background thumb warming while actively watching video or reading manga
     if (activeVideo || activeManga) return;
 
     const needsWarm = filteredVideos
-      .slice(0, 150)
+      .slice(0, Math.min(filteredVideos.length, Math.max(40, visibleHomeCount + 12)))
       .filter(
         (v) =>
           v.thumbnailFileId &&
@@ -1691,7 +2602,8 @@ export default function VaultStreamApp() {
             Boolean(v.encrypted),
             v.thumbnailModifiedTime
           )
-      );
+      )
+      .slice(0, 40);
     if (needsWarm.length === 0) return;
 
     let cancelled = false;
@@ -1721,7 +2633,104 @@ export default function VaultStreamApp() {
 
     const timer = setTimeout(() => {
       if (!cancelled) {
-        Promise.all(Array.from({ length: 4 }, () => worker())).catch(() => undefined);
+        Promise.all(Array.from({ length: 2 }, () => worker())).catch(() => undefined);
+      }
+    }, 1100);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [accessToken, masterKey, filteredVideos, visibleHomeCount, activeVideo, activeManga]);
+
+  // Reset progressive render count whenever filters/tabs/search change
+  useEffect(() => {
+    setVisibleHomeCount(36);
+  }, [
+    navSection,
+    categoryTab,
+    searchQuery,
+    selectedGenres,
+    onlyUncategorized,
+    sortMode,
+    homeShuffleSeed,
+  ]);
+
+  // Seamless infinite-scroll sentinel for Home Grid & List (avoids mounting 300+ cards at once!)
+  useEffect(() => {
+    const sentinel = homeLoadMoreRef.current;
+    if (!sentinel || visibleHomeCount >= filteredVideos.length) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisibleHomeCount((prev) => Math.min(filteredVideos.length, prev + 36));
+        }
+      },
+      { rootMargin: "900px 0px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [visibleHomeCount, filteredVideos.length, navSection, viewMode]);
+
+  const displayedVideos = useMemo(
+    () => filteredVideos.slice(0, visibleHomeCount),
+    [filteredVideos, visibleHomeCount]
+  );
+
+  // Automatic background "Zero-Wait Pre-Warmer": pre-buffers Continue Watching & visible top cards (~0.05s start!)
+  useEffect(() => {
+    if (!accessToken || (vaultConfig && !masterKey)) return;
+    if (activeVideo || activeManga || cacheBuildState.running) return;
+    if (continueWatchingVideos.length === 0 && displayedVideos.length === 0) return;
+
+    const seen = new Set<string>();
+    const targets: Array<{ item: VaultVideoItem; resumeSec: number }> = [];
+
+    const pushTarget = (item: VaultVideoItem): boolean => {
+      if (seen.has(item.id)) return false;
+      if (item.kind !== "hls" && item.kind !== "manga") return false;
+      if (item.encrypted && !masterKey) return false;
+      seen.add(item.id);
+      const p = progressMap[item.id];
+      const resumeSec =
+        p &&
+        p.currentTime > 3 &&
+        (p.duration <= 0 || p.currentTime < p.duration - 5)
+          ? p.currentTime
+          : 0;
+      targets.push({ item, resumeSec });
+      return true;
+    };
+
+    for (const v of continueWatchingVideos.slice(0, 4)) {
+      pushTarget(v);
+    }
+    let addedVisible = 0;
+    for (const v of displayedVideos) {
+      if (addedVisible >= 6 || targets.length >= 10) break;
+      if (pushTarget(v)) addedVisible += 1;
+    }
+
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    let cursor = 0;
+
+    const worker = async () => {
+      while (!cancelled && !isMainSegmentLoading()) {
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= targets.length) break;
+        const { item, resumeSec } = targets[idx];
+        prewarmVideoForInstantPlay(item, accessToken, masterKey, resumeSec, "low");
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (!cancelled && !isMainSegmentLoading()) {
+        Promise.all(Array.from({ length: 2 }, () => worker())).catch(() => undefined);
       }
     }, 450);
 
@@ -1729,7 +2738,17 @@ export default function VaultStreamApp() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [accessToken, masterKey, filteredVideos, activeVideo, activeManga]);
+  }, [
+    accessToken,
+    vaultConfig,
+    masterKey,
+    activeVideo,
+    activeManga,
+    cacheBuildState.running,
+    continueWatchingVideos,
+    displayedVideos,
+    progressMap,
+  ]);
 
   const { seriesVideos, relatedVideos } = useMemo(() => {
     if (!activeVideo) return { seriesVideos: [], relatedVideos: [] };
@@ -1756,6 +2775,383 @@ export default function VaultStreamApp() {
     { id: "files", label: "ファイル", icon: FolderOpen },
   ];
 
+  const refreshDiskCacheStats = useCallback(async () => {
+    const stats = await getDiskCacheStats();
+    setDiskCacheStats(stats);
+  }, []);
+
+  useEffect(() => {
+    if (cacheModalOpen) {
+      refreshDiskCacheStats().catch(() => undefined);
+    }
+  }, [cacheModalOpen, refreshDiskCacheStats]);
+
+  const handleStopDeviceCache = useCallback(() => {
+    cacheBuildAbortRef.current = true;
+    cacheBuildControllerRef.current?.abort();
+  }, []);
+
+  const handleClearDeviceCache = useCallback(async () => {
+    cacheBuildAbortRef.current = true;
+    cacheBuildControllerRef.current?.abort();
+    clearThumbnailCache(true);
+    clearMangaPageCache();
+    clearSegmentCache();
+    await clearAllThumbDbCache();
+    await refreshDiskCacheStats();
+    showQueueToast("この端末のキャッシュをすべて削除しました");
+  }, [refreshDiskCacheStats, showQueueToast]);
+
+  const handleChangeCacheLimitMb = useCallback(
+    async (limitMb: number) => {
+      setCacheLimitMb(limitMb);
+      await setDiskCacheLimitMb(limitMb);
+      await refreshDiskCacheStats();
+      const gb = Math.round((limitMb / 1024) * 10) / 10;
+      showQueueToast(`端末キャッシュ上限を ${gb} GB に変更しました`);
+    },
+    [refreshDiskCacheStats, showQueueToast]
+  );
+
+  const handleBuildDeviceCache = useCallback(
+    async (mode: "fast_start" | "favorites_deep" | "full_library") => {
+      if (!accessToken || (vaultConfig && !masterKey) || cacheBuildState.running) return;
+      cacheBuildAbortRef.current = false;
+      const controller = new AbortController();
+      cacheBuildControllerRef.current = controller;
+      await requestPersistentStorage().catch(() => undefined);
+
+      // Prioritize Favorites & Continue Watching first so your most-watched items become 0ms instant immediately
+      const favIds = new Set(
+        Object.entries(userMetaMap)
+          .filter(([, m]) => Boolean(m?.favorite))
+          .map(([id]) => id)
+      );
+      const cwIds = new Set(continueWatchingVideos.map((v) => v.id));
+
+      const orderedVideos = [...videos].sort((a, b) => {
+        const score = (v: VaultVideoItem) =>
+          (favIds.has(v.id) ? 4 : 0) + (cwIds.has(v.id) ? 2 : 0);
+        const diff = score(b) - score(a);
+        if (diff !== 0) return diff;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+
+      const targets =
+        mode === "favorites_deep"
+          ? orderedVideos.filter((v) => favIds.has(v.id) || cwIds.has(v.id))
+          : orderedVideos;
+
+      if (targets.length === 0) {
+        showQueueToast(
+          mode === "favorites_deep"
+            ? "お気に入り・続きを見るの動画がまだありません"
+            : "キャッシュ対象の動画がありません"
+        );
+        return;
+      }
+
+      const label =
+        mode === "fast_start"
+          ? "高速スタートキャッシュ作成中（8並列・爆速モード）"
+          : mode === "favorites_deep"
+          ? "お気に入り＆続きを見る 深掘りキャッシュ作成中（8並列）"
+          : "大容量まとめてキャッシュ作成中（8並列・上限まで保存）";
+
+      setCacheBuildState({
+        running: true,
+        label: "既存キャッシュを確認中...",
+        done: 0,
+        total: 1,
+        skipped: 0,
+        downloadedBytes: 0,
+        speedBps: 0,
+      });
+
+      // Upfront <5ms key snapshot: skips EVERY already-cached thumb, playlist, manga page & video segment in 0ms!
+      const [initialStats, existingKeys] = await Promise.all([
+        getDiskCacheStats().catch(() => null),
+        getAllCachedKeys().catch(() => ({
+          thumbs: new Set<string>(),
+          playlists: new Set<string>(),
+          segments: new Set<string>(),
+        })),
+      ]);
+
+      const limitBytes = getDiskCacheLimitBytes();
+      const softStopBytes = Math.floor(limitBytes * 0.96);
+      let estimatedSegmentBytes = initialStats?.segmentBytes ?? 0;
+      let hitCapacityLimit = false;
+      let authExpiredHit = false;
+
+      type CacheTask =
+        | { kind: "thumb"; fileId: string; modifiedTime: string; url: string }
+        | { kind: "playlist"; fileId: string; url: string }
+        | { kind: "segment"; url: string };
+
+      const layer1Meta: CacheTask[] = []; // Thumbnails + HLS playlists (tiny -> completes in seconds!)
+      const layer2Media: CacheTask[] = []; // Sprites + Manga pages
+      const layer3OpeningSegs: CacheTask[] = []; // Opening instant-start segments across ALL target videos
+      const layer4DeepSegs: CacheTask[] = []; // Remaining deeper segments
+
+      const queuedThumbs = new Set<string>();
+      const queuedPlaylists = new Set<string>();
+      const queuedSegments = new Set<string>();
+      let skippedCount = 0;
+
+      const enqueueThumb = (
+        bucket: CacheTask[],
+        fileId: string | undefined,
+        modifiedTime = ""
+      ) => {
+        if (!fileId || queuedThumbs.has(fileId)) return;
+        queuedThumbs.add(fileId);
+        if (existingKeys.thumbs.has(fileId)) {
+          skippedCount += 1;
+          return;
+        }
+        bucket.push({
+          kind: "thumb",
+          fileId,
+          modifiedTime,
+          url: buildDriveMediaUrl(fileId),
+        });
+      };
+
+      const enqueuePlaylist = (fileId: string | undefined) => {
+        if (!fileId || queuedPlaylists.has(fileId)) return;
+        queuedPlaylists.add(fileId);
+        if (existingKeys.playlists.has(fileId)) {
+          skippedCount += 1;
+          return;
+        }
+        layer1Meta.push({
+          kind: "playlist",
+          fileId,
+          url: buildDriveMediaUrl(fileId),
+        });
+      };
+
+      const enqueueSegment = (bucket: CacheTask[], url: string) => {
+        if (!url || queuedSegments.has(url)) return;
+        queuedSegments.add(url);
+        if (existingKeys.segments.has(url)) {
+          skippedCount += 1;
+          return;
+        }
+        bucket.push({ kind: "segment", url });
+      };
+
+      const lowSegCount = mode === "fast_start" ? 3 : mode === "favorites_deep" ? 6 : 12;
+      const highSegCount = mode === "fast_start" ? 2 : mode === "favorites_deep" ? 24 : 80;
+      const mangaPageLimit = mode === "fast_start" ? 20 : mode === "favorites_deep" ? 100 : 200;
+
+      for (const item of targets) {
+        enqueueThumb(layer1Meta, item.thumbnailFileId, item.thumbnailModifiedTime ?? "");
+
+        if (item.kind === "manga") {
+          const pages = item.manifest?.pages ?? [];
+          for (const p of pages.slice(0, mangaPageLimit)) {
+            enqueueThumb(layer2Media, p.fileId, "");
+          }
+        } else {
+          enqueueThumb(layer2Media, item.spriteFileId, "");
+          if (item.manifest) {
+            enqueuePlaylist(item.manifest.playlistFileId);
+            for (const vr of item.manifest.variants ?? []) {
+              enqueuePlaylist(vr.playlistFileId);
+            }
+            const resumeSec =
+              mode === "fast_start" ? 0 : (progressMap[item.id]?.currentTime ?? 0);
+            const segUrls = getCacheSegmentUrls(
+              item.manifest,
+              item.duration,
+              resumeSec,
+              lowSegCount,
+              highSegCount
+            );
+            // Layer 3 gets the first 2 instant-start segments of every video first,
+            // then Layer 4 fills the deeper playback segments!
+            segUrls.forEach((sUrl, sIdx) => {
+              enqueueSegment(sIdx < 2 ? layer3OpeningSegs : layer4DeepSegs, sUrl);
+            });
+          }
+        }
+      }
+
+      const tasks: CacheTask[] = [
+        ...layer1Meta,
+        ...layer2Media,
+        ...layer3OpeningSegs,
+        ...layer4DeepSegs,
+      ];
+
+      if (tasks.length === 0) {
+        setCacheBuildState({
+          running: false,
+          label: "",
+          done: 0,
+          total: 0,
+          skipped: skippedCount,
+          downloadedBytes: 0,
+          speedBps: 0,
+        });
+        showQueueToast(`すべてキャッシュ済みです！（${skippedCount} ファイル保存済）`);
+        return;
+      }
+
+      const startedAt = performance.now();
+      let completed = 0;
+      let cursor = 0;
+      let downloadedBytes = 0;
+      let addedThumbs = 0;
+      let addedPlaylists = 0;
+      let addedSegments = 0;
+      let addedSegmentBytes = 0;
+
+      setCacheBuildState({
+        running: true,
+        label,
+        done: 0,
+        total: tasks.length,
+        skipped: skippedCount,
+        downloadedBytes: 0,
+        speedBps: 0,
+      });
+
+      const flushUiProgress = () => {
+        const elapsedSec = Math.max(0.25, (performance.now() - startedAt) / 1000);
+        setCacheBuildState({
+          running: true,
+          label,
+          done: completed,
+          total: tasks.length,
+          skipped: skippedCount,
+          downloadedBytes,
+          speedBps: Math.round(downloadedBytes / elapsedSec),
+        });
+        if (initialStats) {
+          setDiskCacheStats({
+            ...initialStats,
+            thumbCount: initialStats.thumbCount + addedThumbs,
+            playlistCount: initialStats.playlistCount + addedPlaylists,
+            segmentCount: initialStats.segmentCount + addedSegments,
+            segmentBytes: initialStats.segmentBytes + addedSegmentBytes,
+            totalBytes: initialStats.totalBytes + downloadedBytes,
+            limitBytes,
+          });
+        }
+      };
+
+      const uiTimer = setInterval(flushUiProgress, 250);
+
+      const fetchRawWithRetry = async (url: string): Promise<ArrayBuffer | null> => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (cacheBuildAbortRef.current) return null;
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: controller.signal,
+          });
+          if (res.status === 401) {
+            authExpiredHit = true;
+            cacheBuildAbortRef.current = true;
+            controller.abort();
+            return null;
+          }
+          if (res.status === 429 || res.status === 503) {
+            await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+            continue;
+          }
+          if (!res.ok) return null;
+          return res.arrayBuffer();
+        }
+        return null;
+      };
+
+      const worker = async () => {
+        while (!cacheBuildAbortRef.current) {
+          const idx = cursor;
+          cursor += 1;
+          if (idx >= tasks.length) break;
+          const task = tasks[idx];
+
+          if (task.kind === "segment" && estimatedSegmentBytes >= softStopBytes) {
+            hitCapacityLimit = true;
+            cacheBuildAbortRef.current = true;
+            break;
+          }
+
+          try {
+            // Raw encrypted bytes straight from Google Drive -> IndexedDB (ZERO CPU decryption, ZERO RAM bloat!)
+            const buf = await fetchRawWithRetry(task.url);
+            if (buf && buf.byteLength > 0) {
+              if (task.kind === "thumb") {
+                await putCachedThumbBytes(task.fileId, new Uint8Array(buf), task.modifiedTime);
+                addedThumbs += 1;
+              } else if (task.kind === "playlist") {
+                await putCachedPlaylistBytes(task.fileId, new Uint8Array(buf));
+                addedPlaylists += 1;
+              } else {
+                await putCachedSegmentBytes(task.url, buf, true);
+                addedSegments += 1;
+                addedSegmentBytes += buf.byteLength;
+                estimatedSegmentBytes += buf.byteLength;
+              }
+              downloadedBytes += buf.byteLength;
+            }
+          } catch {
+            // Abort or individual transient error
+          }
+
+          completed += 1;
+        }
+      };
+
+      // 8 parallel HTTP/2 streams saturate Wi-Fi cleanly while keeping iPad memory flat!
+      const CONCURRENCY = 8;
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+      clearInterval(uiTimer);
+      cacheBuildControllerRef.current = null;
+
+      await trimDiskCacheToLimit().catch(() => undefined);
+      await refreshDiskCacheStats();
+
+      const wasAborted = cacheBuildAbortRef.current;
+      setCacheBuildState((prev) => ({
+        ...prev,
+        running: false,
+        done: completed,
+        downloadedBytes,
+      }));
+
+      if (authExpiredHit) {
+        handleAuthExpired();
+        return;
+      }
+
+      showQueueToast(
+        hitCapacityLimit
+          ? `設定上限（${Math.round((limitBytes / (1024 * 1024 * 1024)) * 10) / 10} GB）まで保存完了！（+${formatBytes(downloadedBytes)}）`
+          : wasAborted
+          ? `キャッシュ作成を停止しました（+${formatBytes(downloadedBytes)} / ${completed} 件保存済）`
+          : `iPad 高速キャッシュ作成完了！（+${formatBytes(downloadedBytes)}・新規 ${completed} 件保存）`
+      );
+    },
+    [
+      accessToken,
+      vaultConfig,
+      masterKey,
+      cacheBuildState.running,
+      userMetaMap,
+      continueWatchingVideos,
+      progressMap,
+      videos,
+      refreshDiskCacheStats,
+      showQueueToast,
+      handleAuthExpired,
+    ]
+  );
+
   const handleSubmitNewGenre = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGenreName.trim()) return;
@@ -1766,7 +3162,7 @@ export default function VaultStreamApp() {
   return (
     <div className="min-h-screen bg-[#0b0b0e] pb-24 text-zinc-100 md:pb-12">
       {/* Top YouTube + File-Explorer Search Header */}
-      <header className="sticky top-0 z-30 border-b border-zinc-800/80 bg-[#0b0b0e]/95 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 border-b border-zinc-800/80 bg-[#0b0b0e]/95 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
         <div className="flex items-center justify-between gap-2 px-3 py-2.5 sm:gap-4 sm:px-5">
           {/* Left: Menu & Brand */}
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
@@ -1822,25 +3218,6 @@ export default function VaultStreamApp() {
                   </button>
                 )}
               </div>
-
-              <button
-                type="button"
-                onClick={() => setFiltersOpen((prev) => !prev)}
-                className={`relative inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition ${
-                  filtersOpen || activeFilterCount > 0
-                    ? "border-rose-500/50 bg-rose-500/15 text-rose-200"
-                    : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                }`}
-                title="詳細検索・フィルタ"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span className="hidden lg:inline">詳細フィルタ</span>
-                {activeFilterCount > 0 && (
-                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">
-                    {activeFilterCount}
-                  </span>
-                )}
-              </button>
             </div>
           ) : (
             <div className="flex-1" />
@@ -1888,11 +3265,31 @@ export default function VaultStreamApp() {
               </button>
             )}
 
+            {accessToken && (!vaultConfig || masterKey) && (
+              <button
+                type="button"
+                onClick={() => setCacheModalOpen(true)}
+                className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition ${
+                  cacheBuildState.running
+                    ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-emerald-500/50 hover:bg-zinc-800"
+                }`}
+                title="iPad / 端末内に暗号化キャッシュを作成して爆速表示"
+              >
+                <HardDrive className={`h-3.5 w-3.5 ${cacheBuildState.running ? "animate-pulse text-emerald-300" : "text-emerald-400"}`} />
+                <span className="hidden sm:inline">
+                  {cacheBuildState.running
+                    ? `キャッシュ ${Math.round((cacheBuildState.done / Math.max(1, cacheBuildState.total)) * 100)}%`
+                    : "キャッシュ"}
+                </span>
+              </button>
+            )}
+
             {accessToken && (
               <button
                 type="button"
                 onClick={() => {
-                  clearThumbnailCache(true);
+                  // Keep persistent IndexedDB cache intact so thumbnails/videos stay instant!
                   loadLibrary(accessToken, folderId, masterKey, false);
                 }}
                 disabled={loading}
@@ -1949,121 +3346,11 @@ export default function VaultStreamApp() {
             )}
           </div>
         </div>
-
-        {/* Collapsible File-App Advanced Filter Drawer */}
-        {accessToken && (!vaultConfig || masterKey) && filtersOpen && (
-          <div className="border-t border-zinc-800/80 bg-zinc-950/95 px-4 py-3 sm:px-6">
-            <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 text-xs">
-              <div className="flex items-center gap-1.5">
-                <span className="text-zinc-400">長さ:</span>
-                <select
-                  value={durationFilter}
-                  onChange={(e) => setDurationFilter(e.target.value as DurationFilter)}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-200 focus:border-rose-500 focus:outline-none"
-                >
-                  <option value="all">すべて</option>
-                  <option value="short">短め (~5分)</option>
-                  <option value="medium">標準 (5〜20分)</option>
-                  <option value="long">長編 (20分~)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-zinc-400">画質:</span>
-                <select
-                  value={qualityFilter}
-                  onChange={(e) => setQualityFilter(e.target.value as QualityFilter)}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-200 focus:border-rose-500 focus:outline-none"
-                >
-                  <option value="all">すべて</option>
-                  <option value="hd1080">Full HD (1080p+)</option>
-                  <option value="hd720">HD (720p)</option>
-                  <option value="sd">SD (~719p)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-zinc-400">状態:</span>
-                <select
-                  value={watchFilter}
-                  onChange={(e) => setWatchFilter(e.target.value as WatchFilter)}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-200 focus:border-rose-500 focus:outline-none"
-                >
-                  <option value="all">すべて</option>
-                  <option value="uncategorized">未分類のみ</option>
-                  <option value="unwatched">未視聴</option>
-                  <option value="in_progress">視聴途中</option>
-                  <option value="watched">視聴済み</option>
-                  <option value="favorites">お気に入りのみ</option>
-                </select>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-zinc-400">並び替え:</span>
-                <select
-                  value={sortMode}
-                  onChange={(e) => {
-                    const next = e.target.value as SortMode;
-                    setSortMode(next);
-                    if (next === "random") reshuffleHome();
-                  }}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-200 focus:border-rose-500 focus:outline-none"
-                >
-                  <option value="random">ランダム（毎回変わる）</option>
-                  <option value="newest">追加が新しい順</option>
-                  <option value="oldest">追加が古い順</option>
-                  <option value="recent_played">最近再生した順</option>
-                  <option value="title_asc">タイトル順 (A→Z)</option>
-                  <option value="title_desc">タイトル逆順 (Z→A)</option>
-                  <option value="duration_desc">再生時間が長い順</option>
-                  <option value="duration_asc">再生時間が短い順</option>
-                  <option value="size_desc">容量が大きい順</option>
-                </select>
-              </div>
-
-              <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setGenreMatchMode("AND")}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
-                    genreMatchMode === "AND"
-                      ? "bg-rose-600 text-white"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  タグAND
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setGenreMatchMode("OR")}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
-                    genreMatchMode === "OR"
-                      ? "bg-rose-600 text-white"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  タグOR
-                </button>
-              </div>
-
-              {(activeFilterCount > 0 || searchQuery) && (
-                <button
-                  type="button"
-                  onClick={resetAllFilters}
-                  className="ml-auto inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-300 transition hover:border-zinc-700 hover:text-white"
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  リセット
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </header>
 
       {/* Main layout */}
       {!accessToken ? (
-        <main className="mx-auto max-w-xl px-4 py-12">
+        <main className="mx-auto max-w-2xl px-4 py-10">
           {!effectiveClientIdValid && (
             <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-200">
               <div className="flex items-start gap-3">
@@ -2071,10 +3358,16 @@ export default function VaultStreamApp() {
                 <div>
                   <p className="font-semibold">Web 用 OAuth クライアント ID が未設定です</p>
                   <p className="mt-1 text-xs text-amber-200/80">
-                    右上の設定ボタンからクライアント ID を入力してください。
+                    下の「Google Cloud ＆ Drive 自動セットアップ」から設定できます（Drive フォルダはログイン時に自動作成・自動検出されます）。
                   </p>
                 </div>
               </div>
+            </div>
+          )}
+
+          {setupWizardNotice && (
+            <div className="mb-6 rounded-2xl border border-emerald-500/35 bg-emerald-950/25 px-4 py-3 text-xs leading-relaxed text-emerald-200">
+              {setupWizardNotice}
             </div>
           )}
 
@@ -2084,7 +3377,7 @@ export default function VaultStreamApp() {
             </div>
           )}
 
-          <section className="rounded-3xl border border-zinc-800/80 bg-zinc-900/50 p-8 text-center shadow-2xl">
+          <section className="rounded-3xl border border-zinc-800/80 bg-zinc-900/50 p-7 text-center shadow-2xl sm:p-8">
             <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-500/20 to-fuchsia-500/20 text-rose-400 ring-1 ring-rose-500/30">
               <ShieldCheck className="h-8 w-8" />
             </div>
@@ -2094,16 +3387,20 @@ export default function VaultStreamApp() {
             </p>
 
             <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4 text-left text-xs text-zinc-400">
-              <div className="flex items-center justify-between py-1">
-                <span>保存先フォルダ ID</span>
-                <code className="max-w-[60%] truncate text-zinc-200">
-                  {effectiveFolderIdValid ? folderId : "未設定"}
+              <div className="flex items-center justify-between gap-3 py-1">
+                <span className="shrink-0">Google Drive フォルダ</span>
+                <code
+                  className={`max-w-[65%] truncate ${
+                    effectiveFolderIdValid ? "text-zinc-200" : "text-emerald-400"
+                  }`}
+                >
+                  {effectiveFolderIdValid ? folderId : "ログイン時に自動作成・自動検出"}
                 </code>
               </div>
-              <div className="flex items-center justify-between py-1">
-                <span>OAuth クライアント</span>
+              <div className="flex items-center justify-between gap-3 py-1">
+                <span className="shrink-0">OAuth クライアント</span>
                 <span className={effectiveClientIdValid ? "text-emerald-400" : "text-amber-400"}>
-                  {effectiveClientIdValid ? "設定済み" : "未設定"}
+                  {effectiveClientIdValid ? "設定済み" : "未設定（下で自動設定）"}
                 </span>
               </div>
             </div>
@@ -2112,11 +3409,168 @@ export default function VaultStreamApp() {
               type="button"
               onClick={handleSignIn}
               disabled={authLoading}
-              className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
+              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
             >
               <LogIn className="h-4 w-4" />
               {authLoading ? "Google に接続しています..." : "Google アカウントでログイン"}
             </button>
+
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => setAutoSetupOpen((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950/70 px-3.5 py-2 text-xs font-medium text-zinc-300 transition hover:border-rose-500/40 hover:text-white"
+              >
+                <Wand2 className="h-3.5 w-3.5 text-rose-400" />
+                <span>Google Cloud ＆ Drive 自動セットアップ（初回のみ）</span>
+              </button>
+              {effectiveClientIdValid && (
+                <button
+                  type="button"
+                  onClick={() => void copyAutoConfigLink(clientId, folderId)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3.5 py-2 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+                  title="この設定を他端末へ 1 タップで引き継ぐリンクをコピー"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  <span>他端末用設定リンクをコピー</span>
+                </button>
+              )}
+            </div>
+
+            {autoSetupOpen && (
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) void handleOAuthJsonUpload(file);
+                }}
+                className="mt-6 space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950/85 p-5 text-left"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="flex items-center gap-1.5 text-sm font-bold text-white">
+                      <Sparkles className="h-4 w-4 text-rose-400" />
+                      サイト内 Google Cloud ＆ Drive 自動設定ウィザード
+                    </h3>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                      Google Cloud のプロジェクト作成・Drive API 有効化・OAuth JSON 自動読込・Drive 専用フォルダ自動作成までこの画面だけで完結します。
+                    </p>
+                  </div>
+                </div>
+
+                {/* Method 1: Cloud Shell 1-Command Auto Setup */}
+                <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-sky-200">
+                      方法A: Cloud Shell で 1コマンド自動構築（最速・おすすめ）
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCopyCloudShellCommand}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
+                    >
+                      <Terminal className="h-3.5 w-3.5" />
+                      <span>自動コマンドをコピーして Cloud Shell を開く</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-zinc-400">
+                    開いたターミナルにコマンドを貼り付けて Enter を押すと、プロジェクト作成・Drive API 有効化・専用設定 URL の発行まで自動で進みます。
+                  </p>
+                </div>
+
+                {/* Method 2: 3-Click Console Guided Setup */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3.5">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-zinc-200">
+                      方法B: 3ステップ個別設定リンク（必要な設定だけ開く）
+                    </span>
+                    {currentOrigin && (
+                      <button
+                        type="button"
+                        onClick={handleCopyCurrentOrigin}
+                        className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+                      >
+                        <Copy className="h-3 w-3 text-rose-400" />
+                        <span>生成元コピー: {currentOrigin}</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <a
+                      href="https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
+                    >
+                      <span>1. Drive API 有効化</span>
+                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
+                    </a>
+                    <a
+                      href="https://console.cloud.google.com/auth/audience"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
+                    >
+                      <span>2. テストユーザー追加</span>
+                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
+                    </a>
+                    <a
+                      href="https://console.cloud.google.com/auth/clients/create"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => {
+                        void handleCopyCurrentOrigin();
+                      }}
+                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
+                    >
+                      <span>3. クライアント作成</span>
+                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
+                    </a>
+                  </div>
+                  <p className="mt-1.5 text-[10px] text-zinc-500">
+                    ※「3. クライアント作成」は種類で「ウェブ アプリケーション」を選び、「承認済みの JavaScript 生成元」に自動コピーされた URL を貼り付けてください。
+                  </p>
+                </div>
+
+                {/* Auto-Import Zone: OAuth JSON Drop / Clipboard Auto-Read */}
+                <div className="rounded-xl border border-dashed border-rose-500/40 bg-rose-950/10 p-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => oauthJsonInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      <span>OAuth JSON を選択 / ここにドロップ</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReadClipboardSetup}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[11px] font-semibold text-zinc-200 transition hover:border-zinc-500 hover:text-white"
+                    >
+                      <Copy className="h-3.5 w-3.5 text-emerald-400" />
+                      <span>クリップボードから自動読込</span>
+                    </button>
+                    {effectiveClientIdValid && (
+                      <button
+                        type="button"
+                        onClick={handleAutoSetupDriveFolder}
+                        disabled={autoSetupBusy}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-600/20 px-3 py-1.5 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-600/35 disabled:opacity-50"
+                      >
+                        <FolderPlus className="h-3.5 w-3.5" />
+                        <span>{autoSetupBusy ? "作成中..." : "Drive フォルダを自動作成・検出"}</span>
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-2 text-[11px] text-zinc-400">
+                    ダウンロードした <code className="text-zinc-200">client_secret_*.json</code> をドロップするか、クライアント ID をコピーしてこの画面上で <strong className="text-zinc-200">Ctrl+V（Cmd+V）</strong> するだけで自動入力されます。Google Drive フォルダは空欄のままログインしても自動作成されます。
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="mt-6 flex flex-wrap items-center justify-center gap-4 border-t border-zinc-800/80 pt-4 text-[11px] text-zinc-500">
               <Link href="/privacy" className="hover:text-zinc-300 hover:underline">
@@ -2234,10 +3688,10 @@ export default function VaultStreamApp() {
 
             {/* User's genres quick list in sidebar */}
             {sidebarExpanded && (
-              <div className="mt-5 flex-1 overflow-y-auto border-t border-zinc-800/70 pt-4">
+              <div className="mt-5 flex flex-1 flex-col overflow-hidden border-t border-zinc-800/70 pt-4">
                 <div className="mb-2 flex items-center justify-between px-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                    マイジャンル
+                    マイジャンル ({sidebarGenreList.length})
                   </span>
                   <button
                     type="button"
@@ -2248,35 +3702,85 @@ export default function VaultStreamApp() {
                   </button>
                 </div>
 
-                {genreCounts.length === 0 ? (
-                  <p className="px-2 text-[11px] text-zinc-500">
-                    「ジャンル」から好きなジャンルを作成できます
-                  </p>
-                ) : (
-                  <div className="space-y-0.5">
-                    {genreCounts.map(([genre, count]) => {
-                      const selected = selectedGenres.includes(genre);
-                      return (
-                        <button
-                          key={genre}
-                          type="button"
-                          onClick={() => {
-                            toggleGenreSelection(genre);
-                            if (navSection === "genres") setNavSection("home");
-                          }}
-                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
-                            selected
-                              ? "bg-rose-500/15 font-semibold text-rose-300"
-                              : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
-                          }`}
-                        >
-                          <span className="truncate">#{genre}</span>
-                          <span className="ml-2 shrink-0 text-[10px] text-zinc-500">{count}</span>
-                        </button>
-                      );
-                    })}
+                {/* Compact mode switcher & quick filter */}
+                <div className="mb-2 space-y-1.5 px-1">
+                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-900/90 p-0.5 text-[10px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setSidebarGenreMode("main")}
+                      className={`rounded-md py-1 transition ${
+                        sidebarGenreMode === "main"
+                          ? "bg-zinc-800 text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      主要
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSidebarGenreMode("credits")}
+                      className={`rounded-md py-1 transition ${
+                        sidebarGenreMode === "credits"
+                          ? "bg-zinc-800 text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      制作・作者
+                    </button>
                   </div>
-                )}
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-500" />
+                    <input
+                      type="text"
+                      value={sidebarGenreSearch}
+                      onChange={(e) => setSidebarGenreSearch(e.target.value)}
+                      placeholder="タグ絞り込み..."
+                      className="w-full rounded-lg border border-zinc-800/80 bg-zinc-950 py-1 pl-6 pr-6 text-[11px] text-zinc-200 placeholder-zinc-600 focus:border-rose-500/60 focus:outline-none"
+                    />
+                    {sidebarGenreSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setSidebarGenreSearch("")}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200"
+                        aria-label="サイドバータグ検索をクリア"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto">
+                  {sidebarGenreList.length === 0 ? (
+                    <p className="px-2 py-2 text-[11px] text-zinc-500">
+                      該当するタグがありません
+                    </p>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {sidebarGenreList.map(([genre, count]) => {
+                        const selected = selectedGenres.includes(genre);
+                        return (
+                          <button
+                            key={genre}
+                            type="button"
+                            onClick={() => {
+                              toggleGenreSelection(genre);
+                              if (navSection === "genres") setNavSection("home");
+                            }}
+                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
+                              selected
+                                ? "bg-rose-500/15 font-semibold text-rose-300"
+                                : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                            }`}
+                          >
+                            <span className="truncate">#{genre}</span>
+                            <span className="ml-2 shrink-0 text-[10px] text-zinc-500">{count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2340,77 +3844,148 @@ export default function VaultStreamApp() {
               </div>
             )}
 
-            {/* YouTube-style Horizontal Genre Chip Bar */}
+            {/* Grouped & Expandable Home Genre Chip Bar */}
             {navSection !== "genres" && (
-              <div className="mb-5 flex items-center gap-2 overflow-x-auto pb-2 [scrollbar-width:none]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedGenres([]);
-                    setOnlyUncategorized(false);
-                  }}
-                  className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                    selectedGenres.length === 0 && !onlyUncategorized
-                      ? "bg-white text-zinc-950"
-                      : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                  }`}
-                >
-                  すべてのジャンル
-                </button>
+              <div className="mb-5 space-y-2">
+                {/* Compact group switcher + expand/collapse toggle */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="no-scrollbar flex items-center gap-1 overflow-x-auto pb-0.5">
+                    {GENRE_GROUP_TABS.filter(
+                      (tab) =>
+                        tab.id !== "all" &&
+                        (tab.id === "main" ||
+                          tab.id === homeGenreGroup ||
+                          (homeGroupCounts.get(tab.id) ?? 0) > 0)
+                    ).map((tab) => {
+                      const active = homeGenreGroup === tab.id;
+                      const cnt = homeGroupCounts.get(tab.id) ?? 0;
+                      return (
+                        <button
+                          key={`hg-${tab.id}`}
+                          type="button"
+                          onClick={() => setHomeGenreGroup(tab.id)}
+                          className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
+                            active
+                              ? "border-rose-500/50 bg-rose-500/15 text-rose-200"
+                              : "border-zinc-800/80 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          <span className="font-mono text-[10px] opacity-70">{cnt}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
 
-                {uncategorizedCount > 0 && (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {homeScopedGenres.length > 16 && (
+                      <button
+                        type="button"
+                        onClick={() => setHomeGenreExpanded((prev) => !prev)}
+                        className="shrink-0 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-white"
+                      >
+                        {homeGenreExpanded
+                          ? "折りたたむ"
+                          : `すべて表示 (${homeScopedGenres.length})`}
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-0.5 rounded-md border border-zinc-800 bg-zinc-900 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setGenreMatchMode("AND")}
+                        className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                          genreMatchMode === "AND"
+                            ? "bg-rose-600 text-white"
+                            : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                        title="選択したすべてのタグを含む動画を表示"
+                      >
+                        タグAND
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGenreMatchMode("OR")}
+                        className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                          genreMatchMode === "OR"
+                            ? "bg-rose-600 text-white"
+                            : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                        title="選択したタグのいずれかを含む動画を表示"
+                      >
+                        タグOR
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Chips strip (top 16 in horizontal bar when collapsed, full multi-line wrap when expanded) */}
+                <div
+                  className={
+                    homeGenreExpanded
+                      ? "flex flex-wrap items-center gap-2 pb-1"
+                      : "flex items-center gap-2 overflow-x-auto pb-2 [scrollbar-width:none]"
+                  }
+                >
                   <button
                     type="button"
                     onClick={() => {
-                      setOnlyUncategorized((prev) => !prev);
                       setSelectedGenres([]);
+                      setOnlyUncategorized(false);
                     }}
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                      onlyUncategorized
-                        ? "border-amber-500 bg-amber-500/20 text-amber-200"
-                        : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
+                    className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                      selectedGenres.length === 0 && !onlyUncategorized
+                        ? "bg-white text-zinc-950"
+                        : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
                     }`}
                   >
-                    <span>未分類</span>
-                    <span className="text-[10px] opacity-75">{uncategorizedCount}</span>
+                    すべて
                   </button>
-                )}
 
-                {genreCounts
-                  .filter(([genre]) => genre !== "現実" && genre !== "アニメ" && genre !== "漫画")
-                  .map(([genre, count]) => {
-                  const selected = selectedGenres.includes(genre);
-                  return (
+                  {uncategorizedCount > 0 && (
                     <button
-                      key={genre}
                       type="button"
-                      onClick={() => toggleGenreSelection(genre)}
+                      onClick={() => {
+                        setOnlyUncategorized((prev) => !prev);
+                        setSelectedGenres([]);
+                      }}
                       className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                        selected
-                          ? "border-rose-500 bg-rose-600 text-white shadow-sm shadow-rose-600/30"
+                        onlyUncategorized
+                          ? "border-amber-500 bg-amber-500/20 text-amber-200"
                           : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
                       }`}
                     >
-                      <span>#{genre}</span>
-                      <span
-                        className={`text-[10px] ${
-                          selected ? "text-rose-100" : "text-zinc-500"
+                      <span>未分類</span>
+                      <span className="text-[10px] opacity-75">{uncategorizedCount}</span>
+                    </button>
+                  )}
+
+                  {visibleHomeGenreChips.map(([genre, count]) => {
+                    const selected = selectedGenres.includes(genre);
+                    return (
+                      <button
+                        key={genre}
+                        type="button"
+                        onClick={() => toggleGenreSelection(genre)}
+                        className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                          selected
+                            ? "border-rose-500 bg-rose-600 text-white shadow-sm shadow-rose-600/30"
+                            : "border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
                         }`}
                       >
-                        {count}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span>#{genre}</span>
+                        <span
+                          className={`text-[10px] ${
+                            selected ? "text-rose-100" : "text-zinc-500"
+                          }`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
 
-                <button
-                  type="button"
-                  onClick={() => setNavSection("genres")}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-dashed border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-rose-500/60 hover:text-rose-300"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  ジャンル作成
-                </button>
+                </div>
               </div>
             )}
 
@@ -2507,16 +4082,15 @@ export default function VaultStreamApp() {
                         <RotateCcw className={`h-3.5 w-3.5 ${restoringHistory ? "animate-spin" : ""}`} />
                         {restoringHistory ? "履歴を照合・復元中..." : "Drive 履歴からジャンルを復元"}
                       </button>
-                      {DEFAULT_CUSTOM_GENRES.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleSeedDefaultGenres}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-purple-500/50 hover:bg-zinc-800"
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                          定番ジャンル一覧を追加
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={handleAutoEnrichAnimeGenres}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/50 bg-fuchsia-500/15 px-3 py-1.5 text-xs font-semibold text-fuchsia-200 transition hover:bg-fuchsia-500/25"
+                        title="アニメ・漫画向けジャンルを追加し、シリーズ引継ぎ＋タイトル解析で自動振り分けします"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        アニメ・漫画ジャンル自動振り分け
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -2538,98 +4112,169 @@ export default function VaultStreamApp() {
                       作成したあとは「ホーム」の **一括ジャンル分け** ボタンで、複数の動画をまとめて一瞬で振り分けられます！
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {customGenres.map((cg) => {
-                        const count = videos.filter((v) =>
-                          (videoGenresMap[v.id] ?? []).includes(cg.name)
-                        ).length;
-                        const isRenaming = renamingGenre === cg.name;
-                        const selected = selectedGenres.includes(cg.name);
-
-                        return (
-                          <div
-                            key={cg.name}
-                            className={`flex items-center justify-between gap-2 rounded-xl border p-3 transition ${
-                              selected
-                                ? "border-rose-500 bg-rose-500/15"
-                                : getGenreStyle(cg.name, customGenres)
-                            }`}
-                          >
-                            {isRenaming ? (
-                              <form
-                                onSubmit={(e) => {
-                                  e.preventDefault();
-                                  handleRenameCustomGenre(cg.name, renameDraft);
-                                }}
-                                className="flex flex-1 items-center gap-1.5"
+                    <>
+                      {/* Filter bar for 98+ genres: group tabs + search + hide-zero toggle */}
+                      <div className="mb-4 space-y-2.5 border-b border-zinc-800/70 pb-4">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                          <div className="relative flex-1">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+                            <input
+                              type="text"
+                              value={manageGenreSearch}
+                              onChange={(e) => setManageGenreSearch(e.target.value)}
+                              placeholder="ジャンル・作者・制作会社を検索..."
+                              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                            />
+                            {manageGenreSearch && (
+                              <button
+                                type="button"
+                                onClick={() => setManageGenreSearch("")}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
+                                aria-label="ジャンル検索をクリア"
                               >
-                                <input
-                                  type="text"
-                                  value={renameDraft}
-                                  onChange={(e) => setRenameDraft(e.target.value)}
-                                  autoFocus
-                                  className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-white focus:border-rose-500 focus:outline-none"
-                                />
-                                <button
-                                  type="submit"
-                                  className="rounded-lg bg-rose-600 p-1.5 text-white"
-                                >
-                                  <Check className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRenamingGenre(null)}
-                                  className="rounded-lg bg-zinc-800 p-1.5 text-zinc-300"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              </form>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedGenres([cg.name]);
-                                    setOnlyUncategorized(false);
-                                    setNavSection("home");
-                                  }}
-                                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                                >
-                                  <span className="truncate text-sm font-semibold">
-                                    #{cg.name}
-                                  </span>
-                                  <span className="rounded-full bg-black/40 px-2 py-0.5 font-mono text-[11px]">
-                                    {count}本
-                                  </span>
-                                </button>
-
-                                <div className="flex shrink-0 items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setRenamingGenre(cg.name);
-                                      setRenameDraft(cg.name);
-                                    }}
-                                    className="rounded-lg bg-black/30 p-1.5 opacity-75 transition hover:bg-black/60 hover:opacity-100"
-                                    title="名前を変更"
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteCustomGenre(cg.name)}
-                                    className="rounded-lg bg-black/30 p-1.5 opacity-75 transition hover:bg-rose-600/80 hover:text-white hover:opacity-100"
-                                    title="ジャンルを削除"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                              </>
+                                <X className="h-3.5 w-3.5" />
+                              </button>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
+                          <button
+                            type="button"
+                            onClick={() => setHideZeroGenres((prev) => !prev)}
+                            className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                              hideZeroGenres
+                                ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
+                                : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700"
+                            }`}
+                          >
+                            <span>0本のジャンルを隠す</span>
+                          </button>
+                        </div>
+
+                        {!manageGenreSearch.trim() ? (
+                          <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1">
+                            {GENRE_GROUP_TABS.map((tab) => {
+                              const active = manageGenreGroup === tab.id;
+                              const cnt = manageGroupCounts.get(tab.id) ?? 0;
+                              return (
+                                <button
+                                  key={`mg-${tab.id}`}
+                                  type="button"
+                                  onClick={() => setManageGenreGroup(tab.id)}
+                                  className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                                    active
+                                      ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
+                                      : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                                  }`}
+                                >
+                                  <span>{tab.label}</span>
+                                  <span className="font-mono text-[10px] opacity-70">{cnt}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-zinc-400">
+                            「{manageGenreSearch.trim()}」に一致するジャンル（{filteredManageGenres.length} 件）
+                          </p>
+                        )}
+                      </div>
+
+                      {filteredManageGenres.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-xs text-zinc-400">
+                          条件に一致するジャンルがありません。検索条件や「0本を隠す」設定を見直してください。
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {filteredManageGenres.map((cg) => {
+                            const count = allGenreCountsMap.get(cg.name) ?? 0;
+                            const isRenaming = renamingGenre === cg.name;
+                            const selected = selectedGenres.includes(cg.name);
+
+                            return (
+                              <div
+                                key={cg.name}
+                                className={`flex items-center justify-between gap-2 rounded-xl border p-3 transition ${
+                                  selected
+                                    ? "border-rose-500 bg-rose-500/15"
+                                    : getGenreStyle(cg.name, customGenres)
+                                }`}
+                              >
+                                {isRenaming ? (
+                                  <form
+                                    onSubmit={(e) => {
+                                      e.preventDefault();
+                                      handleRenameCustomGenre(cg.name, renameDraft);
+                                    }}
+                                    className="flex flex-1 items-center gap-1.5"
+                                  >
+                                    <input
+                                      type="text"
+                                      value={renameDraft}
+                                      onChange={(e) => setRenameDraft(e.target.value)}
+                                      autoFocus
+                                      className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-white focus:border-rose-500 focus:outline-none"
+                                    />
+                                    <button
+                                      type="submit"
+                                      className="rounded-lg bg-rose-600 p-1.5 text-white"
+                                    >
+                                      <Check className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setRenamingGenre(null)}
+                                      className="rounded-lg bg-zinc-800 p-1.5 text-zinc-300"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                    </button>
+                                  </form>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedGenres([cg.name]);
+                                        setOnlyUncategorized(false);
+                                        setNavSection("home");
+                                      }}
+                                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                    >
+                                      <span className="truncate text-sm font-semibold">
+                                        #{cg.name}
+                                      </span>
+                                      <span className="rounded-full bg-black/40 px-2 py-0.5 font-mono text-[11px]">
+                                        {count}本
+                                      </span>
+                                    </button>
+
+                                    <div className="flex shrink-0 items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setRenamingGenre(cg.name);
+                                          setRenameDraft(cg.name);
+                                        }}
+                                        className="rounded-lg bg-black/30 p-1.5 opacity-75 transition hover:bg-black/60 hover:opacity-100"
+                                        title="名前を変更"
+                                      >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteCustomGenre(cg.name)}
+                                        className="rounded-lg bg-black/30 p-1.5 opacity-75 transition hover:bg-rose-600/80 hover:text-white hover:opacity-100"
+                                        title="ジャンルを削除"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </section>
@@ -2648,14 +4293,14 @@ export default function VaultStreamApp() {
                         <Clock className="h-4 w-4 text-rose-400" />
                         <h2 className="text-sm font-bold text-white">続きを見る</h2>
                       </div>
-                      <div className="flex gap-4 overflow-x-auto pb-2">
+                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
                         {continueWatchingVideos.map((video) => (
                           <VideoCard
                             key={`cw-${video.id}`}
                             video={video}
                             accessToken={accessToken}
                             masterKey={masterKey}
-                            genres={videoGenresMap[video.id] ?? []}
+                            genres={videoGenresMap[video.id] ?? EMPTY_STRING_ARRAY}
                             customGenres={customGenres}
                             isFavorite={Boolean(userMetaMap[video.id]?.favorite)}
                             isInQueue={queueIdSet.has(video.id)}
@@ -2672,6 +4317,72 @@ export default function VaultStreamApp() {
                             onClickGenre={handleClickGenreFromCard}
                           />
                         ))}
+                      </div>
+                    </section>
+                  )}
+
+                {/* YouTube-style "Recommended for You" horizontal shelf on Home */}
+                {navSection === "home" &&
+                  !selectionMode &&
+                  selectedGenres.length === 0 &&
+                  !onlyUncategorized &&
+                  !searchQuery &&
+                  recommendedShelfItems.length > 0 && (
+                    <section className="mb-7">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-rose-400" />
+                          <h2 className="text-sm font-bold text-white">
+                            あなたへのおすすめ
+                            {categoryTab !== "all" ? `（${categoryTab}）` : ""}
+                          </h2>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={reshuffleHome}
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-rose-500/50 hover:text-white"
+                          title="おすすめの候補を入れ替える"
+                        >
+                          <Shuffle className="h-3 w-3 text-rose-400" />
+                          <span>別の候補</span>
+                        </button>
+                      </div>
+                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+                        {recommendedShelfItems.map((video) => {
+                          const reason = recommendationData.reasonById.get(video.id);
+                          return (
+                            <div key={`rec-${video.id}`} className="flex w-64 shrink-0 flex-col gap-1.5 sm:w-72">
+                              {reason && (
+                                <div className="flex items-center gap-1 px-0.5">
+                                  <span className="inline-flex max-w-full items-center gap-1 truncate rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-200">
+                                    <Sparkles className="h-2.5 w-2.5 shrink-0 text-rose-400" />
+                                    <span className="truncate">{reason}</span>
+                                  </span>
+                                </div>
+                              )}
+                              <VideoCard
+                                video={video}
+                                accessToken={accessToken}
+                                masterKey={masterKey}
+                                genres={videoGenresMap[video.id] ?? EMPTY_STRING_ARRAY}
+                                customGenres={customGenres}
+                                isFavorite={Boolean(userMetaMap[video.id]?.favorite)}
+                                isInQueue={queueIdSet.has(video.id)}
+                                progress={progressMap[video.id]}
+                                thumbnailTimeSec={userMetaMap[video.id]?.thumbnailTimeSec}
+                                thumbVersion={thumbVersions[video.id] ?? 0}
+                                compact
+                                linkedItems={crossMedia.linkedById[video.id]}
+                                onOpenCrossMediaSet={handleOpenCrossMediaSet}
+                                onSelect={handlePlayVideo}
+                                onAddToQueue={handleAddToQueue}
+                                onToggleFavorite={handleToggleFavorite}
+                                onEditTags={setEditingTagsVideo}
+                                onClickGenre={handleClickGenreFromCard}
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
                     </section>
                   )}
@@ -2695,11 +4406,11 @@ export default function VaultStreamApp() {
                           同じ作品を 1 タップで同時視聴
                         </span>
                       </div>
-                      <div className="flex gap-3.5 overflow-x-auto pb-2">
+                      <div className="no-scrollbar flex gap-3.5 overflow-x-auto pb-2">
                         {crossMedia.sets.map((set) => (
                           <div
                             key={`set-${set.manga.id}`}
-                            className="flex w-72 shrink-0 flex-col gap-2.5 rounded-2xl border border-amber-400/25 bg-gradient-to-br from-amber-500/[0.08] via-zinc-900/75 to-sky-500/[0.08] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)] backdrop-blur-xl sm:w-80"
+                            className="flex w-72 shrink-0 flex-col gap-2.5 rounded-2xl border border-amber-400/25 bg-gradient-to-br from-amber-950/35 via-zinc-900/95 to-sky-950/35 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)] sm:w-80"
                           >
                             <div className="flex items-center gap-2">
                               <CrossMediaMiniThumb
@@ -2832,6 +4543,7 @@ export default function VaultStreamApp() {
                       }}
                       className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 focus:border-rose-500 focus:outline-none"
                     >
+                      <option value="recommended">おすすめ順</option>
                       <option value="random">ランダム</option>
                       <option value="newest">新しい順</option>
                       <option value="recent_played">最近再生順</option>
@@ -2921,13 +4633,13 @@ export default function VaultStreamApp() {
                         : "grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
                     }
                   >
-                    {filteredVideos.map((video) => (
+                    {displayedVideos.map((video) => (
                       <VideoCard
                         key={video.id}
                         video={video}
                         accessToken={accessToken}
                         masterKey={masterKey}
-                        genres={videoGenresMap[video.id] ?? []}
+                        genres={videoGenresMap[video.id] ?? EMPTY_STRING_ARRAY}
                         customGenres={customGenres}
                         isFavorite={Boolean(userMetaMap[video.id]?.favorite)}
                         isInQueue={queueIdSet.has(video.id)}
@@ -2958,13 +4670,13 @@ export default function VaultStreamApp() {
                         <span className="hidden w-20 text-right md:inline">追加日</span>
                       </div>
                     </div>
-                    {filteredVideos.map((video) => (
+                    {displayedVideos.map((video) => (
                       <VideoListRow
                         key={video.id}
                         video={video}
                         accessToken={accessToken}
                         masterKey={masterKey}
-                        genres={videoGenresMap[video.id] ?? []}
+                        genres={videoGenresMap[video.id] ?? EMPTY_STRING_ARRAY}
                         customGenres={customGenres}
                         isFavorite={Boolean(userMetaMap[video.id]?.favorite)}
                         isInQueue={queueIdSet.has(video.id)}
@@ -2983,6 +4695,26 @@ export default function VaultStreamApp() {
                         onClickGenre={handleClickGenreFromCard}
                       />
                     ))}
+                  </div>
+                )}
+
+                {/* Auto-load sentinel + manual fallback for progressive rendering */}
+                {filteredVideos.length > visibleHomeCount && (
+                  <div
+                    ref={homeLoadMoreRef}
+                    className="mt-6 flex justify-center py-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setVisibleHomeCount((prev) =>
+                          Math.min(filteredVideos.length, prev + 36)
+                        )
+                      }
+                      className="rounded-full border border-zinc-800 bg-zinc-900 px-5 py-2 text-xs font-semibold text-zinc-200 transition hover:border-zinc-700 hover:bg-zinc-800"
+                    >
+                      さらに表示（残り {filteredVideos.length - visibleHomeCount} 件）
+                    </button>
                   </div>
                 )}
               </>
@@ -3037,12 +4769,61 @@ export default function VaultStreamApp() {
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 border-t border-zinc-800/80 pt-2.5">
+          {/* Group tabs + quick search for bulk assignment */}
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-zinc-800/80 pt-2 pb-2">
+            {!bulkGenreSearch.trim() ? (
+              <div className="no-scrollbar flex flex-1 items-center gap-1 overflow-x-auto">
+                {GENRE_GROUP_TABS.map((tab) => {
+                  const active = bulkGenreGroup === tab.id;
+                  return (
+                    <button
+                      key={`bg-${tab.id}`}
+                      type="button"
+                      onClick={() => setBulkGenreGroup(tab.id)}
+                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
+                        active
+                          ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
+                          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <span className="flex-1 text-[11px] text-zinc-400">
+                「{bulkGenreSearch.trim()}」で絞り込み中 ({filteredBulkGenres.length}件)
+              </span>
+            )}
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-500" />
+              <input
+                type="text"
+                value={bulkGenreSearch}
+                onChange={(e) => setBulkGenreSearch(e.target.value)}
+                placeholder="タグ検索..."
+                className="w-32 rounded-lg border border-zinc-800 bg-zinc-900 py-1 pl-6 pr-6 text-[11px] text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none sm:w-40"
+              />
+              {bulkGenreSearch && (
+                <button
+                  type="button"
+                  onClick={() => setBulkGenreSearch("")}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
+                  aria-label="一括タグ検索をクリア"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex max-h-28 flex-wrap items-center gap-1.5 overflow-y-auto border-t border-zinc-800/80 pt-2">
             <span className="mr-1 inline-flex items-center gap-1 text-[11px] text-zinc-400">
               <Tag className="h-3 w-3" />
               一括追加:
             </span>
-            {customGenres.map((cg) => (
+            {filteredBulkGenres.map((cg) => (
               <button
                 key={`bulk-${cg.name}`}
                 type="button"
@@ -3087,7 +4868,7 @@ export default function VaultStreamApp() {
 
       {/* Mobile Bottom Navigation */}
       {accessToken && (!vaultConfig || masterKey) && (
-        <nav className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-zinc-800/90 bg-[#0b0b0e]/95 px-2 py-1.5 backdrop-blur-xl md:hidden">
+        <nav className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-zinc-800/90 bg-[#0b0b0e]/95 px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur-xl md:hidden">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = navSection === item.id;
@@ -3095,7 +4876,10 @@ export default function VaultStreamApp() {
               <button
                 key={`mob-${item.id}`}
                 type="button"
-                onClick={() => setNavSection(item.id)}
+                onClick={() => {
+                  setNavSection(item.id);
+                  if (item.id === "home") reshuffleHome();
+                }}
                 className={`flex flex-col items-center gap-0.5 rounded-lg px-2.5 py-1 text-[10px] transition ${
                   active ? "font-semibold text-rose-400" : "text-zinc-400"
                 }`}
@@ -3125,7 +4909,7 @@ export default function VaultStreamApp() {
           allVideos={videos}
           accessToken={accessToken}
           masterKey={masterKey}
-          genres={videoGenresMap[activeVideo.id] ?? []}
+          genres={videoGenresMap[activeVideo.id] ?? EMPTY_STRING_ARRAY}
           customGenres={customGenres}
           videoGenresMap={videoGenresMap}
           userMetaMap={userMetaMap}
@@ -3209,13 +4993,287 @@ export default function VaultStreamApp() {
       {editingTagsVideo && (
         <TagEditorModal
           video={editingTagsVideo}
-          currentGenres={videoGenresMap[editingTagsVideo.id] ?? []}
+          currentGenres={videoGenresMap[editingTagsVideo.id] ?? EMPTY_STRING_ARRAY}
           customGenres={customGenres}
           onToggleGenre={handleToggleVideoGenre}
           onAddCustomGenre={handleAddCustomGenreToVideo}
           onClose={() => setEditingTagsVideo(null)}
         />
       )}
+
+      {/* On-Device Persistent Cache Modal (iPad / iPhone / PC Instant Playback!) */}
+      {cacheModalOpen && (
+        <div
+          onClick={() => setCacheModalOpen(false)}
+          className="fixed inset-0 z-[105] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="端末高速キャッシュ管理"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-400">
+                  <HardDrive className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-white">端末高速キャッシュ（iPad 高速化）</h2>
+                  <p className="text-[11px] text-zinc-400">
+                    すべて暗号化（E2EE）のまま iPad 内に保存し、再読み込み後も爆速再生します
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCacheModalOpen(false)}
+                className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-900 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Live Storage Stats + Capacity Bar */}
+            <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div>
+                  <p className="text-[10px] text-zinc-500">サムネ・漫画</p>
+                  <p className="font-mono text-sm font-bold text-white">
+                    {diskCacheStats.thumbCount} <span className="text-[10px] font-normal text-zinc-400">件</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-zinc-500">プレイリスト</p>
+                  <p className="font-mono text-sm font-bold text-white">
+                    {diskCacheStats.playlistCount} <span className="text-[10px] font-normal text-zinc-400">件</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-zinc-500">動画データ</p>
+                  <p className="font-mono text-sm font-bold text-white">
+                    {diskCacheStats.segmentCount} <span className="text-[10px] font-normal text-zinc-400">件</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-zinc-500">使用容量</p>
+                  <p className="font-mono text-sm font-bold text-emerald-300">
+                    {diskCacheStats.totalBytes > 0 ? formatBytes(diskCacheStats.totalBytes) : "0 B"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-2.5 border-t border-zinc-800/80 pt-2.5">
+                <div className="mb-1 flex items-center justify-between text-[11px]">
+                  <span className="text-zinc-400">
+                    動画キャッシュ上限:{" "}
+                    <strong className="font-mono text-zinc-100">
+                      {Math.round((cacheLimitMb / 1024) * 10) / 10} GB
+                    </strong>
+                    {diskCacheStats.quotaBytes ? (
+                      <span className="ml-1.5 text-[10px] text-zinc-500">
+                        （端末割当枠 {formatBytes(diskCacheStats.quotaBytes)}）
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="font-mono text-[11px] text-emerald-300">
+                    {Math.min(
+                      100,
+                      Math.round(
+                        (diskCacheStats.segmentBytes / Math.max(1, diskCacheStats.limitBytes)) * 100
+                      )
+                    )}
+                    %
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-[width] duration-300"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (diskCacheStats.segmentBytes / Math.max(1, diskCacheStats.limitBytes)) *
+                            100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] text-zinc-400">上限サイズ:</span>
+                  {DISK_CACHE_PRESETS_MB.map((presetMb) => {
+                    const active = cacheLimitMb === presetMb;
+                    const gbLabel = `${Math.round((presetMb / 1024) * 10) / 10} GB`;
+                    return (
+                      <button
+                        key={presetMb}
+                        type="button"
+                        disabled={cacheBuildState.running}
+                        onClick={() => handleChangeCacheLimitMb(presetMb)}
+                        className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] font-semibold transition disabled:opacity-45 ${
+                          active
+                            ? "border-emerald-400/70 bg-emerald-500/20 text-emerald-200"
+                            : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                        }`}
+                      >
+                        {gbLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Active Build Progress */}
+            {cacheBuildState.running && (
+              <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-950/25 p-3">
+                <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate font-semibold text-emerald-200">
+                    {cacheBuildState.label}
+                  </span>
+                  <span className="shrink-0 font-mono font-bold text-emerald-300">
+                    {cacheBuildState.done} / {cacheBuildState.total}
+                  </span>
+                </div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-zinc-300">
+                  <span>
+                    +{cacheBuildState.downloadedBytes > 0 ? formatBytes(cacheBuildState.downloadedBytes) : "0 B"}
+                    {cacheBuildState.speedBps > 0
+                      ? ` (${formatBytes(cacheBuildState.speedBps)}/秒)`
+                      : ""}
+                  </span>
+                  {cacheBuildState.skipped > 0 && (
+                    <span className="text-zinc-400">
+                      保存済 {cacheBuildState.skipped} 件をスキップ
+                    </span>
+                  )}
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-900">
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-[width] duration-200"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (cacheBuildState.done / Math.max(1, cacheBuildState.total)) * 100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleStopDeviceCache}
+                    className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-800"
+                  >
+                    ここで停止（作成済み分は保持）
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                disabled={cacheBuildState.running}
+                onClick={() => handleBuildDeviceCache("fast_start")}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-emerald-500/45 bg-emerald-500/15 p-3.5 text-left transition hover:bg-emerald-500/25 disabled:opacity-45"
+              >
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-bold text-emerald-200">
+                    <Zap className="h-3.5 w-3.5 fill-current" />
+                    <span>高速スタートキャッシュを作成（おすすめ）</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-zinc-300">
+                    全動画のサムネ＋プレビュー＋再生リスト＋冒頭映像（360p＋高画質先頭）＋漫画20Pを保存
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-bold text-zinc-950">
+                  開始
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={cacheBuildState.running}
+                onClick={() => handleBuildDeviceCache("favorites_deep")}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-left transition hover:bg-rose-500/20 disabled:opacity-45"
+              >
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-bold text-rose-200">
+                    <Heart className="h-3.5 w-3.5 fill-current" />
+                    <span>お気に入り＆続きを見るを深掘りキャッシュ</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-zinc-300">
+                    お気に入り・続き位置の前後約 5 分以上（高画質＋360p）と漫画最大 100P を先読み保存
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-lg bg-rose-500 px-2.5 py-1 text-[11px] font-bold text-white">
+                  開始
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={cacheBuildState.running}
+                onClick={() => handleBuildDeviceCache("full_library")}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-cyan-500/40 bg-cyan-500/10 p-3.5 text-left transition hover:bg-cyan-500/20 disabled:opacity-45"
+              >
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-bold text-cyan-200">
+                    <HardDrive className="h-3.5 w-3.5" />
+                    <span>大容量まとめてキャッシュ（上限 {Math.round((cacheLimitMb / 1024) * 10) / 10} GB まで保存）</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-zinc-300">
+                    お気に入り・続き・新着順に上限いっぱいまで高画質映像＆漫画を自動保存（再実行時は済分スキップ）
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-lg bg-cyan-500 px-2.5 py-1 text-[11px] font-bold text-zinc-950">
+                  開始
+                </span>
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between border-t border-zinc-800/80 pt-3">
+              <button
+                type="button"
+                disabled={cacheBuildState.running || diskCacheStats.totalBytes === 0}
+                onClick={handleClearDeviceCache}
+                className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 px-3 py-1.5 text-[11px] font-medium text-zinc-400 transition hover:border-rose-500/50 hover:text-rose-300 disabled:opacity-40"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>端末キャッシュを削除</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCacheModalOpen(false)}
+                className="rounded-xl bg-zinc-100 px-4 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-white"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden OAuth JSON input usable from both Login Wizard and Settings Modal */}
+      <input
+        ref={oauthJsonInputRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            void handleOAuthJsonUpload(file);
+          }
+          e.target.value = "";
+        }}
+      />
 
       {/* Settings Modal */}
       {settingsOpen && (
@@ -3227,7 +5285,13 @@ export default function VaultStreamApp() {
         >
           <form
             onSubmit={handleSaveSettings}
-            className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const file = e.dataTransfer.files?.[0];
+              if (file) void handleOAuthJsonUpload(file);
+            }}
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl"
           >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold text-white">接続設定</h2>
@@ -3240,6 +5304,12 @@ export default function VaultStreamApp() {
               </button>
             </div>
 
+            {setupWizardNotice && (
+              <div className="mb-4 rounded-xl border border-emerald-500/35 bg-emerald-950/25 px-3 py-2 text-[11px] leading-relaxed text-emerald-200">
+                {setupWizardNotice}
+              </div>
+            )}
+
             <div className="space-y-4">
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
@@ -3248,23 +5318,99 @@ export default function VaultStreamApp() {
                 <input
                   type="text"
                   value={draftClientId}
-                  onChange={(e) => setDraftClientId(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val.trim().startsWith("{")) {
+                      const parsed = parseAutoSetupPayload(val);
+                      if (parsed.clientId) {
+                        setDraftClientId(parsed.clientId);
+                        return;
+                      }
+                    }
+                    setDraftClientId(val);
+                  }}
                   placeholder="1234567890-xxxx.apps.googleusercontent.com"
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
                 />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => oauthJsonInputRef.current?.click()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/50 hover:text-white"
+                  >
+                    <Upload className="h-3 w-3 text-rose-400" />
+                    <span>JSON 読込</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReadClipboardSetup}
+                    className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:border-emerald-500/50 hover:text-white"
+                  >
+                    <Copy className="h-3 w-3 text-emerald-400" />
+                    <span>クリップボード自動読込</span>
+                  </button>
+                  {currentOrigin && (
+                    <button
+                      type="button"
+                      onClick={handleCopyCurrentOrigin}
+                      className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:text-white"
+                    >
+                      <Copy className="h-3 w-3 text-sky-400" />
+                      <span>生成元コピー</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCopyCloudShellCommand}
+                    className="inline-flex items-center gap-1 rounded-lg border border-sky-500/35 bg-sky-500/10 px-2.5 py-1 text-[11px] font-medium text-sky-200 transition hover:bg-sky-500/20"
+                  >
+                    <Terminal className="h-3 w-3" />
+                    <span>Cloud Shell 自動構築</span>
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
-                  Google Drive フォルダ ID（フォルダ URL をそのまま貼っても OK）
+                  Google Drive フォルダ ID（空欄のままログインしても自動作成・検出されます）
                 </label>
                 <input
                   type="text"
                   value={draftFolderId}
                   onChange={(e) => setDraftFolderId(e.target.value)}
-                  placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz123456"
+                  placeholder="空欄で OK（ログイン時に「VaultStream-Vault」を自動作成・検出）"
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
                 />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleAutoSetupDriveFolder}
+                    disabled={autoSetupBusy}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-600/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-600/30 disabled:opacity-50"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                    <span>
+                      {autoSetupBusy
+                        ? "Drive フォルダを検出・作成中..."
+                        : "Drive フォルダを自動作成・自動検出"}
+                    </span>
+                  </button>
+                  {isValidClientId(draftClientId || clientId) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void copyAutoConfigLink(
+                          draftClientId || clientId,
+                          draftFolderId || folderId
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
+                    >
+                      <Link2 className="h-3 w-3 text-rose-400" />
+                      <span>他端末用 1タップリンクコピー</span>
+                    </button>
+                  )}
+                </div>
               </div>
               {accessToken && (
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3.5">

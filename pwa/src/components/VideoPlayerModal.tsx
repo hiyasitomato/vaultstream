@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import {
   AlertCircle,
@@ -45,11 +45,16 @@ import {
   buildRewrittenHlsPlaylist,
   driveFetchBlobUrl,
   driveFetchCachedThumbnailUrl,
+  EMPTY_STRING_ARRAY,
   formatBytes,
   formatDuration,
+  getCachedSpriteGrid,
+  getCacheSegmentUrls,
   getSegmentUrlForTime,
   getSyncCachedThumbnailUrl,
   prefetchHlsPlaylist,
+  prewarmVideoForInstantPlay,
+  setCachedSpriteGrid,
   updateThumbnailInDrive,
   type SegmentTimelineEntry,
 } from "@/lib/drive";
@@ -60,6 +65,7 @@ import {
   hasSegmentCache,
   prefetchSegmentUrl,
 } from "@/lib/segmentCache";
+import { getAllCachedKeys } from "@/lib/thumbDb";
 import { saveVideoProgress } from "@/lib/storage";
 import type {
   CustomGenreDef,
@@ -139,7 +145,7 @@ interface WebKitHTMLElement extends HTMLDivElement {
   webkitRequestFullscreen?: () => Promise<void> | void;
 }
 
-function SmallThumb({
+const SmallThumb = memo(function SmallThumb({
   video,
   accessToken,
   masterKey,
@@ -220,7 +226,7 @@ function SmallThumb({
       )}
     </div>
   );
-}
+});
 
 export default function VideoPlayerModal({
   video,
@@ -297,7 +303,13 @@ export default function VideoPlayerModal({
   const [bufferedPercent, setBufferedPercent] = useState(0);
   const [durationSec, setDurationSec] = useState(video.duration || 0);
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
+  const watchSheetRef = useRef<HTMLDivElement | null>(null);
   const hideControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekRippleAccumRef = useRef<{
+    side: "left" | "right";
+    total: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null>(null);
 
   // Storyboard sprite sheet (6x6) + instant poster for zero-black-screen TTFF
   const [posterUrl, setPosterUrl] = useState<string | null>(() =>
@@ -367,6 +379,7 @@ export default function VideoPlayerModal({
     startX: number;
     startY: number;
     startVideoTime: number;
+    wasControlsVisible: boolean;
     mode: "pending" | "vertical" | "horizontal" | "longpress";
     lastDy: number;
     lastTargetSec: number;
@@ -496,6 +509,9 @@ export default function VideoPlayerModal({
 
       try {
         if (video.kind === "hls" && video.manifest) {
+          // Parallel race: pre-fetch opening/resume video segment & sprites BEFORE awaiting playlist decrypt!
+          prewarmVideoForInstantPlay(video, accessToken, masterKey, resumePosition, "high");
+
           const built = await buildRewrittenHlsPlaylist(
             video.manifest,
             accessToken,
@@ -511,6 +527,15 @@ export default function VideoPlayerModal({
           urlsToRevoke = built.objectUrlsToRevoke;
           setQualityLabels(built.qualityLabels);
 
+          const hdSegUrl = getCacheSegmentUrls(
+            video.manifest,
+            video.duration,
+            resumePosition,
+            0,
+            1
+          )[0];
+          const hdCachedInRam = Boolean(hdSegUrl && hasSegmentCache(hdSegUrl));
+
           if (Hls.isSupported() && videoEl) {
             hls = new Hls({
               enableWorker: true,
@@ -518,7 +543,9 @@ export default function VideoPlayerModal({
               enableSoftwareAES: false,
               lowLatencyMode: false,
               autoStartLoad: true,
-              startLevel: 0,
+              startLevel: hdCachedInRam
+                ? Math.max(0, built.qualityLabels.length - 1)
+                : 0,
               startPosition: resumePosition > 0 ? resumePosition : -1,
               startFragPrefetch: true,
               maxBufferLength: 180,
@@ -740,7 +767,13 @@ export default function VideoPlayerModal({
 
   // Auto-detect sprite sheet grid dimensions (supports existing 6x6 [960x540] and new 10x10 [1600x900] sprites!)
   useEffect(() => {
-    if (!spriteUrl || typeof Image === "undefined") return;
+    if (!spriteUrl) return;
+    const cachedGrid = getCachedSpriteGrid(spriteUrl);
+    if (cachedGrid) {
+      setSpriteGrid(cachedGrid);
+      return;
+    }
+    if (typeof Image === "undefined") return;
     let active = true;
     const img = new Image();
     img.onload = () => {
@@ -749,7 +782,9 @@ export default function VideoPlayerModal({
         const cols = Math.round(img.naturalWidth / 160);
         const rows = Math.round(img.naturalHeight / 90);
         if (cols >= 4 && rows >= 4 && cols <= 16 && rows <= 16) {
-          setSpriteGrid({ cols, rows });
+          const nextGrid = { cols, rows };
+          setCachedSpriteGrid(spriteUrl, nextGrid);
+          setSpriteGrid(nextGrid);
         }
       }
     };
@@ -778,12 +813,28 @@ export default function VideoPlayerModal({
     zoomWindowCenterSec,
   ]);
 
-  // Cleanup live 1-second preview decoder & scrub timers on unmount or video switch
+  // Cleanup live 1-second preview decoder & interaction/scrub timers on unmount or video switch
   useEffect(() => {
     return () => {
       if (liveScrubTimerRef.current) {
         clearTimeout(liveScrubTimerRef.current);
         liveScrubTimerRef.current = null;
+      }
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      if (seekPrefetchTimerRef.current) {
+        clearTimeout(seekPrefetchTimerRef.current);
+        seekPrefetchTimerRef.current = null;
+      }
+      if (seekRippleAccumRef.current?.timer) {
+        clearTimeout(seekRippleAccumRef.current.timer);
+        seekRippleAccumRef.current = null;
       }
       wasPlayingBeforeScrubRef.current = false;
       wasPausedBeforeLongPressRef.current = false;
@@ -1079,10 +1130,9 @@ export default function VideoPlayerModal({
     };
   }, [hoverSeekRatio, durationSec, accessToken, resolveExactSegmentUrl]);
 
-  // High-speed 6-parallel background full-video downloader while watching:
-  // Saturates HTTP/2 multiplexing to pull the entire video into the 512MB LRU cache ASAP.
-  // Because our custom hls.js loader joins in-flight prefetches seamlessly (zero duplicate bytes),
-  // we don't stall behind normal playback — we race ahead so hls.js hits 0ms memory cache!
+  // Disk-aware gentle lookahead segment prefetcher while watching:
+  // Checks L2 IndexedDB once on mount so already-persisted segments aren't re-downloaded,
+  // and keeps the next ~5 minutes (20 segments) ahead of the playhead ready for 0ms seeks!
   useEffect(() => {
     if (loading || renditionTimelinesState.length === 0) {
       setCacheProgress({ cached: 0, total: 0 });
@@ -1102,79 +1152,115 @@ export default function VideoPlayerModal({
     timelineRef.current = timeline;
 
     let cancelled = false;
+    let loopTimer: ReturnType<typeof setTimeout> | null = null;
+    let diskSegKeys = new Set<string>();
+
+    const isSegCachedAnywhere = (url: string) =>
+      hasSegmentCache(url) || diskSegKeys.has(url);
+
     const updateStats = () => {
       if (cancelled) return;
       let count = 0;
       for (const seg of timeline) {
-        if (hasSegmentCache(seg.url)) count += 1;
+        if (isSegCachedAnywhere(seg.url)) count += 1;
       }
-      setCacheProgress({ cached: count, total: timeline.length });
-    };
-    updateStats();
-
-    // Keep progress % live even as hls.js itself caches segments
-    const statsInterval = setInterval(updateStats, 800);
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-    const runFullDownload = async () => {
-      await sleep(200);
-      if (cancelled) return;
-
-      const curPos = videoRef.current?.currentTime ?? 0;
-      const startIdx = Math.max(
-        0,
-        timeline.findIndex((s) => curPos >= s.startSec && curPos < s.endSec)
+      setCacheProgress((prev) =>
+        prev.cached === count && prev.total === timeline.length
+          ? prev
+          : { cached: count, total: timeline.length }
       );
+    };
 
-      // Build queue: current -> end, then 0 -> startIdx - 1
-      const pendingUrls: string[] = [];
-      for (let i = startIdx; i < timeline.length; i += 1) {
-        pendingUrls.push(timeline[i].url);
-      }
-      for (let i = 0; i < startIdx; i += 1) {
-        pendingUrls.push(timeline[i].url);
-      }
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        loopTimer = setTimeout(() => {
+          loopTimer = null;
+          resolve();
+        }, ms);
+      });
 
+    // Gently sync cache stats without hammering React re-renders
+    const statsInterval = setInterval(updateStats, 2500);
+
+    const runGentlePrefetch = async () => {
+      try {
+        const cachedKeys = await getAllCachedKeys();
+        if (!cancelled) {
+          diskSegKeys = cachedKeys.segments;
+        }
+      } catch {
+        // Ignore IndexedDB key read failure
+      }
+      updateStats();
+
+      await sleep(800);
       const retryCounts = new Map<string, number>();
 
-      const worker = async () => {
-        while (!cancelled) {
-          let nextUrl: string | undefined;
-          while (pendingUrls.length > 0) {
-            const candidate = pendingUrls.shift();
-            if (candidate && !hasSegmentCache(candidate)) {
-              nextUrl = candidate;
-              break;
-            }
-          }
-          if (!nextUrl) return;
+      while (!cancelled) {
+        const curPos = videoRef.current?.currentTime ?? 0;
+        const foundIdx = timeline.findIndex(
+          (s) => curPos >= s.startSec && curPos < s.endSec
+        );
+        const startIdx = Math.max(0, foundIdx);
+        const lookAheadEnd = Math.min(timeline.length, startIdx + 20);
 
-          try {
-            const p = prefetchSegmentUrl(nextUrl, accessToken, "low");
-            if (p) await p;
-          } catch {
-            // Re-queue if aborted by a user seek (up to 3 retries)
-            const tries = (retryCounts.get(nextUrl) ?? 0) + 1;
-            if (tries <= 3 && !cancelled) {
-              retryCounts.set(nextUrl, tries);
-              await sleep(250);
-              pendingUrls.push(nextUrl);
-            }
+        const pendingUrls: string[] = [];
+        for (let i = startIdx; i < lookAheadEnd; i += 1) {
+          const url = timeline[i].url;
+          if (!isSegCachedAnywhere(url)) {
+            pendingUrls.push(url);
           }
+        }
+
+        if (pendingUrls.length > 0) {
+          const worker = async () => {
+            while (!cancelled) {
+              let nextUrl: string | undefined;
+              while (pendingUrls.length > 0) {
+                const candidate = pendingUrls.shift();
+                if (candidate && !isSegCachedAnywhere(candidate)) {
+                  nextUrl = candidate;
+                  break;
+                }
+              }
+              if (!nextUrl) return;
+
+              try {
+                const p = prefetchSegmentUrl(nextUrl, accessToken, "low");
+                if (p) await p;
+                diskSegKeys.add(nextUrl);
+              } catch {
+                const tries = (retryCounts.get(nextUrl) ?? 0) + 1;
+                if (tries <= 2 && !cancelled) {
+                  retryCounts.set(nextUrl, tries);
+                  await sleep(400);
+                  pendingUrls.push(nextUrl);
+                }
+              }
+              updateStats();
+            }
+          };
+
+          // Gentle 2 parallel streams (zero stutter on iPadOS Safari!)
+          await Promise.all(Array.from({ length: 2 }, () => worker()));
           updateStats();
         }
-      };
 
-      // 6 parallel HTTP/2 streams for maximum Drive download throughput
-      await Promise.all(Array.from({ length: 6 }, () => worker()));
-      updateStats();
+        if (cancelled) break;
+        // Re-check playhead every 12 seconds to keep the next ~5 minutes continuously preloaded
+        await sleep(12000);
+      }
     };
 
-    runFullDownload();
+    runGentlePrefetch();
 
     return () => {
       cancelled = true;
       clearInterval(statsInterval);
+      if (loopTimer) {
+        clearTimeout(loopTimer);
+        loopTimer = null;
+      }
     };
   }, [loading, renditionTimelinesState, selectedLevel, accessToken, video.id]);
 
@@ -1203,7 +1289,14 @@ export default function VideoPlayerModal({
       const active = el.webkitPresentationMode === "picture-in-picture";
       setIsNativePipActive(active);
     };
-    const onPlayState = () => setIsPaused(el.paused);
+    const onPlayState = () => {
+      setIsPaused(el.paused);
+      if (el.paused && Number.isFinite(el.currentTime) && el.currentTime > 0) {
+        const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : video.duration;
+        const updated = saveVideoProgress(video.id, el.currentTime, dur, false);
+        onProgressUpdatedRef.current(video.id, updated);
+      }
+    };
 
     el.addEventListener("loadedmetadata", checkNativePipSupport);
     el.addEventListener("canplay", checkNativePipSupport);
@@ -1287,7 +1380,20 @@ export default function VideoPlayerModal({
     }
   };
 
+  const menusOrZoomOpenRef = useRef(false);
+  const controlsVisibleRef = useRef(true);
+  const lastUiTimeUpdateRef = useRef(0);
+  useEffect(() => {
+    menusOrZoomOpenRef.current = speedMenuOpen || qualityMenuOpen || zoomSeekOpen;
+  }, [speedMenuOpen, qualityMenuOpen, zoomSeekOpen]);
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+  }, [controlsVisible]);
+
   const bumpControlsVisibility = useCallback(() => {
+    if (videoRef.current && Number.isFinite(videoRef.current.currentTime)) {
+      setCurrentTimeSec(videoRef.current.currentTime);
+    }
     setControlsVisible(true);
     if (hideControlsTimerRef.current) {
       clearTimeout(hideControlsTimerRef.current);
@@ -1297,12 +1403,14 @@ export default function VideoPlayerModal({
         videoRef.current &&
         !videoRef.current.paused &&
         !isDraggingSeekRef.current &&
-        !isDraggingZoomSeekRef.current
+        !isDraggingZoomSeekRef.current &&
+        !menusOrZoomOpenRef.current
       ) {
         setControlsVisible(false);
         setSpeedMenuOpen(false);
+        setQualityMenuOpen(false);
       }
-    }, 2600);
+    }, 5500);
   }, []);
 
   // Enforce inline playback on iPadOS/iOS Safari so Apple's native AVPlayer never hijacks our custom UI
@@ -1395,16 +1503,31 @@ export default function VideoPlayerModal({
     setIsMiniMode(true);
   }, []);
 
+  // Lock background Home page scroll while full Watch view is open (native iPad YouTube feel!)
+  useEffect(() => {
+    if (isMiniMode || typeof document === "undefined") return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isMiniMode]);
+
   const triggerSeekRipple = useCallback((side: "left" | "right", deltaSec: number) => {
+    const prev = seekRippleAccumRef.current;
+    if (prev?.timer) clearTimeout(prev.timer);
+    const total = prev && prev.side === side ? prev.total + deltaSec : deltaSec;
     const nonce = Date.now();
     setSeekRipple({
       side,
-      label: deltaSec > 0 ? `+${deltaSec}秒` : `${deltaSec}秒`,
+      label: total > 0 ? `+${total}秒` : `${total}秒`,
       nonce,
     });
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      seekRippleAccumRef.current = null;
       setSeekRipple((cur) => (cur && cur.nonce === nonce ? null : cur));
-    }, 620);
+    }, 680);
+    seekRippleAccumRef.current = { side, total, timer };
   }, []);
 
   const startLongPress2x = useCallback(() => {
@@ -1553,6 +1676,7 @@ export default function VideoPlayerModal({
       startX: t.clientX,
       startY: t.clientY,
       startVideoTime,
+      wasControlsVisible: controlsVisibleRef.current,
       mode: "pending",
       lastDy: 0,
       lastTargetSec: startVideoTime,
@@ -1663,8 +1787,13 @@ export default function VideoPlayerModal({
 
     const now = performance.now();
     const prev = lastTapRef.current;
-    if (prev && now - prev.time < 290 && prev.zone === zone) {
-      lastTapRef.current = null;
+    // Allow chained YouTube-style cumulative skips (+10s -> +20s -> +30s) when tapping repeatedly!
+    const isChainedSkip =
+      (zone === "left" || zone === "right") &&
+      seekRippleAccumRef.current &&
+      seekRippleAccumRef.current.side === zone;
+    if ((prev && now - prev.time < 300 && prev.zone === zone) || isChainedSkip) {
+      lastTapRef.current = { time: now, zone };
       if (singleTapTimerRef.current) {
         clearTimeout(singleTapTimerRef.current);
         singleTapTimerRef.current = null;
@@ -1681,21 +1810,29 @@ export default function VideoPlayerModal({
         setCurrentTimeSec(nextT);
         triggerSeekRipple("right", 10);
       } else {
+        lastTapRef.current = null;
         handleToggleFullscreen();
       }
       return;
     }
 
     lastTapRef.current = { time: now, zone };
+    const nextVisible = !g.wasControlsVisible;
     if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
     singleTapTimerRef.current = setTimeout(() => {
       singleTapTimerRef.current = null;
-      setControlsVisible((prevVisible) => {
-        const next = !prevVisible;
-        if (next) bumpControlsVisibility();
-        return next;
-      });
-    }, 240);
+      if (nextVisible) {
+        bumpControlsVisibility();
+      } else {
+        if (hideControlsTimerRef.current) {
+          clearTimeout(hideControlsTimerRef.current);
+          hideControlsTimerRef.current = null;
+        }
+        setControlsVisible(false);
+        setSpeedMenuOpen(false);
+        setQualityMenuOpen(false);
+      }
+    }, 190);
   };
 
   const handleVideoTouchCancel = () => {
@@ -1810,21 +1947,29 @@ export default function VideoPlayerModal({
       isDraggingSeekRef.current ||
       isDraggingZoomSeekRef.current ||
       touchGestureRef.current?.mode === "horizontal";
-    if (!isActivelyScrubbing) {
+
+    const now = Date.now();
+    const uiIntervalMs =
+      controlsVisibleRef.current || isMiniMode || menusOrZoomOpenRef.current ? 250 : 1200;
+
+    if (!isActivelyScrubbing && now - lastUiTimeUpdateRef.current >= uiIntervalMs) {
+      lastUiTimeUpdateRef.current = now;
       setCurrentTimeSec(el.currentTime);
-    }
-    const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : video.duration;
-    if (dur > 0) {
-      setDurationSec(dur);
-      if (el.buffered.length > 0) {
-        const bufEnd = el.buffered.end(el.buffered.length - 1);
-        setBufferedPercent(Math.min(100, Math.max(0, (bufEnd / dur) * 100)));
+      const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : video.duration;
+      if (dur > 0) {
+        setDurationSec((prev) => (Math.abs(prev - dur) > 0.25 ? dur : prev));
+        if (el.buffered.length > 0) {
+          const bufEnd = el.buffered.end(el.buffered.length - 1);
+          const nextBuf = Math.round(Math.min(100, Math.max(0, (bufEnd / dur) * 100)));
+          setBufferedPercent((prev) => (prev === nextBuf ? prev : nextBuf));
+        }
       }
     }
+
     if (isActivelyScrubbing) return;
-    const now = Date.now();
-    if (now - lastProgressSavedAtRef.current < 2000) return;
+    if (now - lastProgressSavedAtRef.current < 8000) return;
     lastProgressSavedAtRef.current = now;
+    const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : video.duration;
     const updated = saveVideoProgress(video.id, el.currentTime, dur, false);
     onProgressUpdated(video.id, updated);
   };
@@ -2017,22 +2162,182 @@ export default function VideoPlayerModal({
 
   const isSplitDocked = isMiniMode && hasActiveManga && splitWithManga;
 
+  // Memoize the heavy below-player discovery feed so 60fps seekbar scrubbing & time ticks
+  // NEVER re-reconcile the card grid below the player!
+  const memoizedBrowseSection = useMemo(
+    () => (
+      <section className="mt-7 border-t border-zinc-800/80 pt-5">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-sm font-bold text-white">
+            再生しながら他の動画を探す ({browseVideos.length} 件)
+          </h2>
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <button
+              type="button"
+              onClick={() =>
+                setBrowseShuffleSeed(Math.floor(Math.random() * 0x7fffffff))
+              }
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-rose-500/50 hover:bg-zinc-800 hover:text-white active:scale-95"
+              title="下の動画リストをシャッフル"
+            >
+              <Shuffle className="h-3.5 w-3.5 text-rose-400" />
+              <span>シャッフル</span>
+            </button>
+            <div className="relative flex-1 sm:w-64 sm:flex-initial">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+              <input
+                type="text"
+                value={browseQuery}
+                onChange={(e) => setBrowseQuery(e.target.value)}
+                placeholder="動画・ジャンルを検索..."
+                className="w-full rounded-full border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+              />
+              {browseQuery && (
+                <button
+                  type="button"
+                  onClick={() => setBrowseQuery("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {browseGenreList.length > 0 && (
+          <div className="no-scrollbar mb-4 flex items-center gap-1.5 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => setBrowseGenre("")}
+              className={`shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold transition active:scale-95 ${
+                !browseGenre
+                  ? "bg-white text-zinc-950"
+                  : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+              }`}
+            >
+              すべて
+            </button>
+            {browseGenreList.map(([g, count]) => (
+              <button
+                key={`br-${g}`}
+                type="button"
+                onClick={() => setBrowseGenre(browseGenre === g ? "" : g)}
+                className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs font-medium transition active:scale-95 ${
+                  browseGenre === g
+                    ? "border-rose-500 bg-rose-600 text-white"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                }`}
+              >
+                #{g} <span className="opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {browseVideos.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-zinc-800 py-8 text-center text-xs text-zinc-500">
+            一致する動画がありません
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 xl:grid-cols-3">
+              {browseVideos.slice(0, visibleBrowseCount).map((item) => (
+                <VideoCard
+                  key={`below-${item.id}`}
+                  video={item}
+                  accessToken={accessToken}
+                  masterKey={masterKey}
+                  genres={videoGenresMap[item.id] ?? EMPTY_STRING_ARRAY}
+                  customGenres={customGenres}
+                  isFavorite={Boolean(userMetaMap[item.id]?.favorite)}
+                  isInQueue={queueIdSet.has(item.id)}
+                  progress={progressMap[item.id]}
+                  thumbnailTimeSec={userMetaMap[item.id]?.thumbnailTimeSec}
+                  thumbVersion={thumbVersions[item.id] ?? 0}
+                  onSelect={onSelectVideo}
+                  onAddToQueue={onAddToQueue}
+                  onToggleFavorite={onToggleFavorite}
+                  onEditTags={onEditTags}
+                  onClickGenre={setBrowseGenre}
+                />
+              ))}
+            </div>
+            {browseVideos.length > visibleBrowseCount && (
+              <div className="mt-5 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleBrowseCount((c) => c + 12)}
+                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-6 py-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800 active:scale-95"
+                >
+                  さらに表示（残り {browseVideos.length - visibleBrowseCount} 件）
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    ),
+    [
+      browseVideos,
+      browseQuery,
+      browseGenreList,
+      browseGenre,
+      visibleBrowseCount,
+      accessToken,
+      masterKey,
+      videoGenresMap,
+      customGenres,
+      userMetaMap,
+      queueIdSet,
+      progressMap,
+      thumbVersions,
+      onSelectVideo,
+      onAddToQueue,
+      onToggleFavorite,
+      onEditTags,
+    ]
+  );
+
+  const sheetDragOpacity =
+    !isMiniMode && !anyFullscreen && dragOffsetY > 0
+      ? Math.max(0.28, 1 - dragOffsetY / 320)
+      : 1;
+
   return (
     <div
+      ref={watchSheetRef}
       className={
         isSplitDocked
           ? "fixed inset-x-0 top-0 z-[55] flex h-[34dvh] flex-col overflow-hidden border-b border-white/15 bg-[#060609] shadow-2xl shadow-black/90 lg:inset-y-0 lg:left-0 lg:right-auto lg:h-[100dvh] lg:w-[42vw] lg:justify-center lg:border-b-0 lg:border-r lg:border-white/15"
           : isMiniMode
-            ? "fixed bottom-16 right-3 z-[55] w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 sm:w-[340px] md:bottom-5 md:right-5"
-            : "fixed inset-0 z-[55] flex flex-col bg-[#0b0b0e]"
+            ? "fixed bottom-16 right-3 z-[55] w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 transition-all duration-200 sm:w-[340px] md:bottom-5 md:right-5"
+            : "yt-sheet-in fixed inset-0 z-[55] flex flex-col bg-[#0b0b0e]"
+      }
+      style={
+        !isMiniMode && !anyFullscreen
+          ? {
+              backgroundColor: `rgba(11, 11, 14, ${sheetDragOpacity.toFixed(2)})`,
+              transform:
+                dragOffsetY > 0
+                  ? `translate3d(0, ${dragOffsetY}px, 0) scale(${(1 - Math.min(0.08, dragOffsetY / 2200)).toFixed(4)})`
+                  : undefined,
+              borderRadius: dragOffsetY > 12 ? "20px" : undefined,
+              transition:
+                dragOffsetY !== 0
+                  ? "none"
+                  : "transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease",
+              willChange: dragOffsetY !== 0 ? "transform" : undefined,
+            }
+          : undefined
       }
       role="dialog"
       aria-modal={!isMiniMode}
       aria-label={video.title}
     >
       {/* YouTube Watch-Page Top Navigation Bar */}
-      {!isMiniMode && (
-        <header className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/80 bg-[#0b0b0e]/95 px-3 py-2.5 backdrop-blur-xl sm:px-5">
+      {!isMiniMode && !anyFullscreen && (
+        <header className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/80 bg-[#0b0b0e]/95 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] backdrop-blur-xl sm:px-5">
           <div className="flex items-center gap-2 sm:gap-3">
             <button
               type="button"
@@ -2129,13 +2434,20 @@ export default function VideoPlayerModal({
             {/* Custom Unified YouTube-style Video Player Container */}
             <div
               ref={playerContainerRef}
-              onMouseMove={bumpControlsVisibility}
-              onMouseLeave={() => {
+              onPointerMove={(e) => {
+                // Only show HUD on real desktop mouse movement — NEVER synthetic touch mousemove on iPad/iPhone!
+                if (e.pointerType !== "mouse") return;
+                bumpControlsVisibility();
+              }}
+              onPointerLeave={(e) => {
+                if (e.pointerType !== "mouse") return;
                 if (
                   !isPaused &&
                   !isDraggingSeekRef.current &&
                   !isDraggingZoomSeekRef.current &&
-                  !zoomSeekOpen
+                  !zoomSeekOpen &&
+                  !speedMenuOpen &&
+                  !qualityMenuOpen
                 ) {
                   setControlsVisible(false);
                   setSpeedMenuOpen(false);
@@ -2155,14 +2467,21 @@ export default function VideoPlayerModal({
                         : "ios-no-callout relative aspect-video max-h-[72vh] w-full touch-none overflow-hidden rounded-2xl bg-black ring-1 ring-zinc-800/80"
               }
               style={
-                !isMiniMode && dragOffsetY !== 0
+                !isMiniMode && anyFullscreen && dragOffsetY !== 0
                   ? {
-                      transform: `translateY(${dragOffsetY}px) scale(${1 - Math.min(0.1, Math.max(0, dragOffsetY) / 1600)})`,
+                      transform: `translate3d(0, ${dragOffsetY}px, 0) scale(${(1 - Math.min(0.1, Math.max(0, dragOffsetY) / 1600)).toFixed(4)})`,
                       transition: "none",
+                      willChange: "transform",
                     }
-                  : !isMiniMode
-                    ? { transition: "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)" }
-                    : undefined
+                  : !isMiniMode && !anyFullscreen && dragOffsetY < 0
+                    ? {
+                        transform: `translate3d(0, ${dragOffsetY}px, 0) scale(${(1 + Math.min(0.03, Math.abs(dragOffsetY) / 2400)).toFixed(4)})`,
+                        transition: "none",
+                        willChange: "transform",
+                      }
+                    : !isMiniMode
+                      ? { transition: "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)" }
+                      : undefined
               }
             >
               <video
@@ -2200,9 +2519,9 @@ export default function VideoPlayerModal({
                 className="ios-no-callout h-full w-full cursor-pointer select-none object-contain"
               />
 
-              {/* iOS Swipe-Down / Swipe-Up Pull Hint Pill */}
+              {/* iOS Swipe-Down / Swipe-Up Pull Hint Pill (zero backdrop-blur over video!) */}
               {!isMiniMode && Math.abs(dragOffsetY) > 28 && (
-                <div className="pointer-events-none absolute left-1/2 top-5 z-30 -translate-x-1/2 rounded-full border border-white/20 bg-black/75 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xl backdrop-blur-xl">
+                <div className="pointer-events-none absolute left-1/2 top-5 z-30 -translate-x-1/2 rounded-full border border-white/20 bg-black/80 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xl">
                   {anyFullscreen
                     ? dragOffsetY > 145
                       ? "↓ 離すとホームへ戻る"
@@ -2215,7 +2534,7 @@ export default function VideoPlayerModal({
 
               {/* Long-press 2.0x Speed Pill (YouTube iOS gesture + PC Mouse Hold!) */}
               {!isMiniMode && isLongPress2x && (
-                <div className="pointer-events-none absolute left-1/2 top-5 z-30 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-amber-400/40 bg-black/80 px-3.5 py-1.5 text-xs font-bold text-amber-200 shadow-2xl backdrop-blur-xl">
+                <div className="pointer-events-none absolute left-1/2 top-5 z-30 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-amber-400/45 bg-black/85 px-3.5 py-1.5 text-xs font-bold text-amber-200 shadow-2xl">
                   <Zap className="h-3.5 w-3.5 fill-current text-amber-400" />
                   <span>2.0× 再生中（離すと戻る）</span>
                 </div>
@@ -2223,7 +2542,7 @@ export default function VideoPlayerModal({
 
               {/* Horizontal Swipe Scrub Floating Pill */}
               {!isMiniMode && swipeScrubState && (
-                <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1.5 rounded-2xl border border-white/20 bg-black/80 px-4 py-2.5 shadow-2xl backdrop-blur-2xl">
+                <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1.5 rounded-2xl border border-white/20 bg-black/85 px-4 py-2.5 shadow-2xl">
                   <div className="flex items-center gap-2 font-mono text-sm font-bold text-white">
                     <span>{formatDuration(swipeScrubState.targetSec)}</span>
                     <span className="text-xs text-rose-400">
@@ -2233,19 +2552,22 @@ export default function VideoPlayerModal({
                 </div>
               )}
 
-              {/* Double-Tap +/-10s Ripple Indicator */}
+              {/* YouTube-style Curved Side Double-Tap Skip Ripple (cumulative +10s / +20s / +30s!) */}
               {!isMiniMode && seekRipple && (
                 <div
-                  className={`pointer-events-none absolute top-1/2 z-30 flex h-20 w-20 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-white/20 bg-white/15 text-xs font-bold text-white shadow-2xl backdrop-blur-xl ${
-                    seekRipple.side === "left" ? "left-[16%]" : "right-[16%]"
+                  key={seekRipple.nonce}
+                  className={`pointer-events-none absolute inset-y-0 z-30 flex w-[38%] flex-col items-center justify-center bg-white/[0.14] text-sm font-bold text-white transition-opacity ${
+                    seekRipple.side === "left"
+                      ? "left-0 rounded-r-full"
+                      : "right-0 rounded-l-full"
                   }`}
                 >
                   {seekRipple.side === "left" ? (
-                    <Rewind className="mb-0.5 h-5 w-5" />
+                    <Rewind className="mb-1 h-6 w-6" />
                   ) : (
-                    <FastForward className="mb-0.5 h-5 w-5" />
+                    <FastForward className="mb-1 h-6 w-6" />
                   )}
-                  <span>{seekRipple.label}</span>
+                  <span className="font-mono drop-shadow">{seekRipple.label}</span>
                 </div>
               )}
 
@@ -2286,7 +2608,7 @@ export default function VideoPlayerModal({
                       triggerSeekRipple("left", -10);
                       bumpControlsVisibility();
                     }}
-                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/50 text-white shadow-xl backdrop-blur-xl transition active:scale-90 sm:hidden ${
+                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/65 text-white shadow-xl transition active:scale-90 sm:hidden ${
                       controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
                     }`}
                     aria-label="10秒戻す"
@@ -2301,7 +2623,7 @@ export default function VideoPlayerModal({
                       handleTogglePlayPause();
                       bumpControlsVisibility();
                     }}
-                    className="pointer-events-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/25 bg-black/55 text-white shadow-2xl backdrop-blur-xl transition hover:scale-105 hover:bg-rose-600/90 active:scale-95"
+                    className="pointer-events-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/25 bg-black/65 text-white shadow-2xl transition hover:scale-105 hover:bg-rose-600/90 active:scale-90"
                     aria-label={isPaused ? "再生" : "一時停止"}
                   >
                     {isPaused ? (
@@ -2323,7 +2645,7 @@ export default function VideoPlayerModal({
                       triggerSeekRipple("right", 10);
                       bumpControlsVisibility();
                     }}
-                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/50 text-white shadow-xl backdrop-blur-xl transition active:scale-90 sm:hidden ${
+                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/65 text-white shadow-xl transition active:scale-90 sm:hidden ${
                       controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
                     }`}
                     aria-label="10秒進む"
@@ -2333,11 +2655,12 @@ export default function VideoPlayerModal({
                 </div>
               )}
 
-              {/* Fullscreen Top Liquid Glass Bar (Direct Home button + Exit Fullscreen + Manga Split + PiP on iPad!) */}
+              {/* Fullscreen Top Bar (Direct Home button + Exit Fullscreen + Manga Split + PiP on iPad!) */}
               {!isMiniMode && !loading && !error && anyFullscreen ? (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className={`absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent px-3 pb-6 pt-[max(0.75rem,env(safe-area-inset-top))] transition-opacity duration-200 sm:px-5 ${
+                  onPointerDown={bumpControlsVisibility}
+                  className={`absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 px-3 pb-2 pt-[max(0.625rem,env(safe-area-inset-top))] transition-opacity duration-200 sm:px-5 ${
                     controlsVisible || isPaused
                       ? "opacity-100"
                       : "pointer-events-none opacity-0"
@@ -2347,7 +2670,7 @@ export default function VideoPlayerModal({
                     <button
                       type="button"
                       onClick={handleGoHomeFromPlayer}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.12] px-3.5 py-1.5 text-xs font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] backdrop-blur-2xl transition hover:bg-white/[0.22] active:scale-95"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/25 bg-black/70 px-3.5 py-1.5 text-xs font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22)] transition hover:bg-black/85 active:scale-95"
                       title="再生を続けたままホームへ戻る"
                     >
                       <Home className="h-3.5 w-3.5" />
@@ -2356,13 +2679,13 @@ export default function VideoPlayerModal({
                     <button
                       type="button"
                       onClick={handleToggleFullscreen}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-black/50 px-3 py-1.5 text-xs font-semibold text-zinc-100 backdrop-blur-xl transition hover:bg-black/75 active:scale-95"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-semibold text-zinc-100 transition hover:bg-black/85 active:scale-95"
                       title="全画面を閉じる"
                     >
                       <ChevronDown className="h-4 w-4" />
                       <span className="hidden sm:inline">縮小</span>
                     </button>
-                    <p className="hidden truncate text-xs font-semibold text-white/90 md:block">
+                    <p className="hidden truncate text-xs font-semibold text-white/95 drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)] md:block">
                       {video.title}
                     </p>
                   </div>
@@ -2382,7 +2705,7 @@ export default function VideoPlayerModal({
                           setMangaPickerOpen(true);
                         }
                       }}
-                      className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-100 backdrop-blur-xl transition hover:bg-amber-500/30"
+                      className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-950/75 px-3 py-1.5 text-xs font-semibold text-amber-100 transition hover:bg-amber-900/85 active:scale-95"
                     >
                       <BookOpen className="h-3.5 w-3.5" />
                       <span className="hidden sm:inline">漫画同時</span>
@@ -2393,10 +2716,10 @@ export default function VideoPlayerModal({
                         e.stopPropagation();
                         handleToggleNativePip();
                       }}
-                      className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-xl transition ${
+                      className={`flex h-9 w-9 items-center justify-center rounded-full border transition active:scale-95 ${
                         isNativePipActive
                           ? "border-rose-400/70 bg-rose-600/90 text-white"
-                          : "border-white/20 bg-black/55 text-white/90 hover:bg-black/80"
+                          : "border-white/20 bg-black/65 text-white/90 hover:bg-black/85"
                       }`}
                       title="ピクチャーインピクチャー"
                       aria-label="ピクチャーインピクチャー"
@@ -2413,7 +2736,7 @@ export default function VideoPlayerModal({
                     e.stopPropagation();
                     handleToggleNativePip();
                   }}
-                  className={`absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full border backdrop-blur-md transition-opacity duration-200 ${
+                  className={`absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full border transition-opacity duration-200 active:scale-95 ${
                     controlsVisible || isPaused || isNativePipActive
                       ? "opacity-100"
                       : "pointer-events-none opacity-0"
@@ -2433,6 +2756,7 @@ export default function VideoPlayerModal({
               {!isMiniMode && !error && (
                 <div
                   onClick={(e) => e.stopPropagation()}
+                  onPointerDown={bumpControlsVisibility}
                   className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-3 pt-10 transition-opacity duration-200 sm:px-4 ${
                     anyFullscreen ? "pb-[max(0.75rem,env(safe-area-inset-bottom))]" : "pb-2.5"
                   } ${
@@ -2501,7 +2825,7 @@ export default function VideoPlayerModal({
                     };
 
                     return (
-                      <div className="mb-2.5 rounded-2xl border border-white/15 bg-black/75 p-2.5 shadow-2xl backdrop-blur-2xl">
+                      <div className="mb-2.5 rounded-2xl border border-white/15 bg-zinc-950/90 p-2.5 shadow-2xl">
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
                           <div className="flex items-center gap-1.5">
                             <ZoomIn className="h-3.5 w-3.5 text-rose-400" />
@@ -3137,7 +3461,7 @@ export default function VideoPlayerModal({
 
               {/* Mini-mode top overlay */}
               {isMiniMode && (
-                <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent p-2">
+                <div className="absolute inset-x-0 top-0 flex items-center justify-between p-2">
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
@@ -3393,23 +3717,26 @@ export default function VideoPlayerModal({
                     </div>
                   )}
 
-                  {genres.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {genres.map((genre) => (
-                        <button
-                          key={genre}
-                          type="button"
-                          onClick={() => setBrowseGenre(genre)}
-                          className={`rounded-md border px-2 py-0.5 text-xs font-medium transition hover:brightness-125 ${getGenreStyle(
-                            genre,
-                            customGenres
-                          )}`}
-                        >
-                          #{genre}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  {(() => {
+                    const contentGenres = getContentGenresOnly(genres);
+                    return contentGenres.length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {contentGenres.map((genre) => (
+                          <button
+                            key={genre}
+                            type="button"
+                            onClick={() => setBrowseGenre(genre)}
+                            className={`rounded-md border px-2 py-0.5 text-xs font-medium transition hover:brightness-125 ${getGenreStyle(
+                              genre,
+                              customGenres
+                            )}`}
+                          >
+                            #{genre}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null;
+                  })()}
 
                   {/* Mobile / iPad Portrait Series-or-Related Recommendation Strip */}
                   {(seriesVideos.length > 0 || relatedVideos.length > 0) && (
@@ -3490,14 +3817,32 @@ export default function VideoPlayerModal({
                                     </span>
                                   ))}
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => onEditTags(item)}
-                                  className="inline-flex items-center gap-0.5 rounded-md border border-zinc-700/80 bg-zinc-950/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 hover:border-rose-500/50 hover:text-white"
-                                >
-                                  <Tag className="h-2.5 w-2.5" />
-                                  <span>ジャンル</span>
-                                </button>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => onEditTags(item)}
+                                    className="inline-flex items-center gap-0.5 rounded-md border border-zinc-700/80 bg-zinc-950/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 hover:border-rose-500/50 hover:text-white"
+                                  >
+                                    <Tag className="h-2.5 w-2.5" />
+                                    <span>ジャンル</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleFavorite(item.id)}
+                                    className={`flex h-5 w-5 items-center justify-center rounded-md border transition ${
+                                      userMetaMap[item.id]?.favorite
+                                        ? "border-rose-500/50 bg-rose-500/20 text-rose-400"
+                                        : "border-zinc-700/80 bg-zinc-950/80 text-zinc-400 hover:text-rose-300"
+                                    }`}
+                                    aria-label="お気に入り"
+                                  >
+                                    <Heart
+                                      className={`h-2.5 w-2.5 ${
+                                        userMetaMap[item.id]?.favorite ? "fill-current" : ""
+                                      }`}
+                                    />
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           );
@@ -3507,120 +3852,8 @@ export default function VideoPlayerModal({
                   )}
                 </div>
 
-                {/* BELOW-PLAYER YOUTUBE DISCOVERY & SEARCH FEED */}
-                <section className="mt-7 border-t border-zinc-800/80 pt-5">
-                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <h2 className="text-sm font-bold text-white">
-                      再生しながら他の動画を探す ({browseVideos.length} 件)
-                    </h2>
-                    <div className="flex w-full items-center gap-2 sm:w-auto">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setBrowseShuffleSeed(Math.floor(Math.random() * 0x7fffffff))
-                        }
-                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-rose-500/50 hover:bg-zinc-800 hover:text-white"
-                        title="下の動画リストをシャッフル"
-                      >
-                        <Shuffle className="h-3.5 w-3.5 text-rose-400" />
-                        <span>シャッフル</span>
-                      </button>
-                      <div className="relative flex-1 sm:w-64 sm:flex-initial">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-                        <input
-                          type="text"
-                          value={browseQuery}
-                          onChange={(e) => setBrowseQuery(e.target.value)}
-                          placeholder="動画・ジャンルを検索..."
-                          className="w-full rounded-full border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
-                        />
-                        {browseQuery && (
-                          <button
-                            type="button"
-                            onClick={() => setBrowseQuery("")}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Genre chips below player */}
-                  {browseGenreList.length > 0 && (
-                    <div className="mb-4 flex items-center gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]">
-                      <button
-                        type="button"
-                        onClick={() => setBrowseGenre("")}
-                        className={`shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
-                          !browseGenre
-                            ? "bg-white text-zinc-950"
-                            : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                        }`}
-                      >
-                        すべて
-                      </button>
-                      {browseGenreList.map(([g, count]) => (
-                        <button
-                          key={`br-${g}`}
-                          type="button"
-                          onClick={() => setBrowseGenre(browseGenre === g ? "" : g)}
-                          className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
-                            browseGenre === g
-                              ? "border-rose-500 bg-rose-600 text-white"
-                              : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                          }`}
-                        >
-                          #{g} <span className="opacity-70">{count}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Video cards grid right below the playing video */}
-                  {browseVideos.length === 0 ? (
-                    <p className="rounded-2xl border border-dashed border-zinc-800 py-8 text-center text-xs text-zinc-500">
-                      一致する動画がありません
-                    </p>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 xl:grid-cols-3">
-                        {browseVideos.slice(0, visibleBrowseCount).map((item) => (
-                          <VideoCard
-                            key={`below-${item.id}`}
-                            video={item}
-                            accessToken={accessToken}
-                            masterKey={masterKey}
-                            genres={videoGenresMap[item.id] ?? []}
-                            customGenres={customGenres}
-                            isFavorite={Boolean(userMetaMap[item.id]?.favorite)}
-                            isInQueue={queueIdSet.has(item.id)}
-                            progress={progressMap[item.id]}
-                            thumbnailTimeSec={userMetaMap[item.id]?.thumbnailTimeSec}
-                            thumbVersion={thumbVersions[item.id] ?? 0}
-                            onSelect={onSelectVideo}
-                            onAddToQueue={onAddToQueue}
-                            onToggleFavorite={onToggleFavorite}
-                            onEditTags={onEditTags}
-                            onClickGenre={(g) => setBrowseGenre(g)}
-                          />
-                        ))}
-                      </div>
-                      {browseVideos.length > visibleBrowseCount && (
-                        <div className="mt-5 flex justify-center">
-                          <button
-                            type="button"
-                            onClick={() => setVisibleBrowseCount((c) => c + 12)}
-                            className="rounded-xl border border-zinc-800 bg-zinc-900 px-6 py-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
-                          >
-                            さらに表示（残り {browseVideos.length - visibleBrowseCount} 件）
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </section>
+                {/* BELOW-PLAYER YOUTUBE DISCOVERY & SEARCH FEED (memoized for 120fps seekbar!) */}
+                {memoizedBrowseSection}
               </>
             )}
           </div>

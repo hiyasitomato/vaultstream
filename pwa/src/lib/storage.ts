@@ -1,8 +1,14 @@
 import { DEFAULT_CUSTOM_GENRES } from "./genres";
+import {
+  clearCachedLibraryFromDb,
+  loadCachedLibraryFromDb,
+  saveCachedLibraryToDb,
+} from "./thumbDb";
 import type {
   CustomGenreDef,
   PlaybackProgress,
   SyncedVaultUserData,
+  VaultConfig,
   VideoUserMeta,
 } from "./types";
 
@@ -13,8 +19,63 @@ const LEGACY_CUSTOM_GENRES_KEY = "vaultstream:custom_genres:v1";
 const AUTH_SESSION_KEY = "vaultstream:auth_session:v2";
 const SAVED_PASSPHRASE_KEY = "vaultstream:passphrase:v1";
 const VIDEO_LIST_CACHE_PREFIX = "vaultstream:video_list_cache:v1:";
+const VAULT_CONFIG_CACHE_PREFIX = "vaultstream:vault_cfg:v1:";
 const CLIENT_ID_OVERRIDE_KEY = "vaultstream:client_id_override";
 const FOLDER_ID_OVERRIDE_KEY = "vaultstream:folder_id_override";
+
+export function loadCachedVaultConfig(folderId: string): VaultConfig | null {
+  if (typeof window === "undefined" || !folderId) return null;
+  try {
+    const raw = window.localStorage.getItem(`${VAULT_CONFIG_CACHE_PREFIX}${folderId}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as VaultConfig;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedVaultConfig(folderId: string, cfg: VaultConfig | null): void {
+  if (typeof window === "undefined" || !folderId) return;
+  try {
+    if (!cfg) {
+      window.localStorage.removeItem(`${VAULT_CONFIG_CACHE_PREFIX}${folderId}`);
+    } else {
+      window.localStorage.setItem(
+        `${VAULT_CONFIG_CACHE_PREFIX}${folderId}`,
+        JSON.stringify(cfg)
+      );
+    }
+  } catch {
+    // Ignore storage quota
+  }
+}
+
+export function clearCachedVaultConfig(folderId: string): void {
+  if (typeof window === "undefined" || !folderId) return;
+  try {
+    window.localStorage.removeItem(`${VAULT_CONFIG_CACHE_PREFIX}${folderId}`);
+  } catch {
+    // Ignore
+  }
+}
+
+function purgeLegacyLocalStorageVideoCaches(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(VIDEO_LIST_CACHE_PREFIX)) {
+        keysToRemove.push(k);
+      }
+    }
+    for (const k of keysToRemove) {
+      window.localStorage.removeItem(k);
+    }
+  } catch {
+    // Ignore
+  }
+}
 
 export function loadCachedVideoList(folderId: string): unknown[] | null {
   if (typeof window === "undefined" || !folderId) return null;
@@ -28,21 +89,34 @@ export function loadCachedVideoList(folderId: string): unknown[] | null {
   }
 }
 
-export function saveCachedVideoList(folderId: string, items: unknown[]): void {
-  if (typeof window === "undefined" || !folderId) return;
-  try {
-    window.localStorage.setItem(
-      `${VIDEO_LIST_CACHE_PREFIX}${folderId}`,
-      JSON.stringify(items)
-    );
-  } catch {
-    // Ignore storage quota
+export async function loadCachedVideoListAsync<T>(folderId: string): Promise<T[] | null> {
+  if (!folderId) return null;
+  const fromDb = await loadCachedLibraryFromDb<T>(folderId);
+  if (fromDb && fromDb.length > 0) {
+    purgeLegacyLocalStorageVideoCaches();
+    return fromDb;
   }
+  // One-time seamless migration if a legacy localStorage cache exists
+  const legacy = loadCachedVideoList(folderId) as T[] | null;
+  if (legacy && legacy.length > 0) {
+    saveCachedLibraryToDb(folderId, legacy).catch(() => undefined);
+    purgeLegacyLocalStorageVideoCaches();
+    return legacy;
+  }
+  purgeLegacyLocalStorageVideoCaches();
+  return null;
+}
+
+export function saveCachedVideoList(folderId: string, items: unknown[]): void {
+  if (!folderId) return;
+  purgeLegacyLocalStorageVideoCaches();
+  saveCachedLibraryToDb(folderId, items).catch(() => undefined);
 }
 
 export function clearCachedVideoList(folderId: string): void {
-  if (typeof window === "undefined" || !folderId) return;
-  window.localStorage.removeItem(`${VIDEO_LIST_CACHE_PREFIX}${folderId}`);
+  if (!folderId) return;
+  purgeLegacyLocalStorageVideoCaches();
+  clearCachedLibraryFromDb(folderId).catch(() => undefined);
 }
 
 export interface SavedAuthSession {
