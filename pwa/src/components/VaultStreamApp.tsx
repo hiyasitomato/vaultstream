@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckSquare,
   Clock,
@@ -32,6 +33,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Shuffle,
   SlidersHorizontal,
   Sparkles,
   Tag,
@@ -40,12 +42,15 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { buildCrossMediaIndex, findSeriesAndRelatedVideos } from "@/lib/crossMedia";
 import { unlockVaultWithPassphrase } from "@/lib/crypto";
 import {
+  clearMangaPageCache,
   clearThumbnailCache,
-  ensureVaultRootFolder,
+  driveFetchCachedThumbnailUrl,
   fetchVaultVideosFast,
   formatBytes,
+  getSyncCachedThumbnailUrl,
   inspectVaultRoot,
   isValidClientId,
   loadSyncedUserDataFromDrive,
@@ -54,8 +59,10 @@ import {
   saveSyncedUserDataToDrive,
 } from "@/lib/drive";
 import {
+  CATEGORY_TAG_SET,
+  DEFAULT_CUSTOM_GENRES,
   GENRE_COLOR_OPTIONS,
-  GENRE_RULES,
+  getContentGenresOnly,
   getEffectiveGenres,
   getGenreStyle,
 } from "@/lib/genres";
@@ -95,6 +102,7 @@ import type {
   ViewMode,
   WatchFilter,
 } from "@/lib/types";
+import MangaReaderModal from "./MangaReaderModal";
 import TagEditorModal from "./TagEditorModal";
 import UploadVideoModal from "./UploadVideoModal";
 import VideoCard from "./VideoCard";
@@ -112,6 +120,104 @@ function extractFolderIdFromInput(raw: string): string {
   const idMatch = trimmed.match(/[?&]id=([A-Za-z0-9_-]+)/);
   if (idMatch) return idMatch[1];
   return trimmed;
+}
+
+function seededOrderHash(id: string, seed: number): number {
+  let h = (seed ^ 0x811c9dc5) >>> 0;
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b) >>> 0;
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
+function CrossMediaMiniThumb({
+  item,
+  accessToken,
+  masterKey,
+  label,
+  thumbVersion = 0,
+}: {
+  item: VaultVideoItem;
+  accessToken: string;
+  masterKey: CryptoKey | null;
+  label: string;
+  thumbVersion?: number;
+}) {
+  const [url, setUrl] = useState<string | null>(() =>
+    getSyncCachedThumbnailUrl(
+      item.thumbnailFileId,
+      Boolean(item.encrypted),
+      item.thumbnailModifiedTime
+    )
+  );
+  useEffect(() => {
+    let active = true;
+    if (!item.thumbnailFileId) return;
+    const sync = getSyncCachedThumbnailUrl(
+      item.thumbnailFileId,
+      Boolean(item.encrypted),
+      item.thumbnailModifiedTime
+    );
+    if (sync) {
+      setUrl(sync);
+      return;
+    }
+    driveFetchCachedThumbnailUrl(
+      item.thumbnailFileId,
+      accessToken,
+      Boolean(item.encrypted),
+      masterKey,
+      item.thumbnailModifiedTime,
+      "normal"
+    )
+      .then((u) => {
+        if (active) setUrl(u);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [
+    item.thumbnailFileId,
+    item.thumbnailModifiedTime,
+    item.encrypted,
+    accessToken,
+    masterKey,
+    thumbVersion,
+  ]);
+
+  return (
+    <div className="relative h-24 flex-1 overflow-hidden rounded-lg bg-[#060609] ring-1 ring-white/15">
+      {url ? (
+        <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-75 blur-xl saturate-[1.8] brightness-[0.34]"
+          />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt={item.title}
+            className="absolute inset-0 z-10 h-full w-full object-contain drop-shadow-[0_6px_14px_rgba(0,0,0,0.85)]"
+          />
+        </>
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-zinc-700">
+          {item.kind === "manga" ? <BookOpen className="h-5 w-5" /> : <Film className="h-5 w-5" />}
+        </div>
+      )}
+      <span className="pointer-events-none absolute bottom-1 left-1 z-20 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-bold text-white backdrop-blur-sm">
+        {label}
+      </span>
+    </div>
+  );
 }
 
 export default function VaultStreamApp() {
@@ -146,12 +252,19 @@ export default function VaultStreamApp() {
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
 
   // Search, file-style filters, and multi-genre state
+  const [categoryTab, setCategoryTab] = useState<"all" | "現実" | "アニメ" | "漫画">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [onlyUncategorized, setOnlyUncategorized] = useState(false);
   const [genreMatchMode, setGenreMatchMode] = useState<"AND" | "OR">("AND");
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [sortMode, setSortMode] = useState<SortMode>("random");
+  const [homeShuffleSeed, setHomeShuffleSeed] = useState<number>(() =>
+    Math.floor(Math.random() * 0x7fffffff)
+  );
+  const reshuffleHome = useCallback(() => {
+    setHomeShuffleSeed(Math.floor(Math.random() * 0x7fffffff));
+  }, []);
   const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
   const [watchFilter, setWatchFilter] = useState<WatchFilter>("all");
@@ -167,11 +280,13 @@ export default function VaultStreamApp() {
   const [renamingGenre, setRenamingGenre] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
 
-  // Modals & YouTube-style Playback Queue
+  // Modals & YouTube-style Playback Queue + Independent Manga Reader
   const [queue, setQueue] = useState<VaultVideoItem[]>([]);
   const [queueIndex, setQueueIndex] = useState<number>(-1);
   const [startTimeOverride, setStartTimeOverride] = useState<number | null>(null);
   const [startTimeNonce, setStartTimeNonce] = useState<number>(0);
+  const [activeManga, setActiveManga] = useState<VaultVideoItem | null>(null);
+  const [mangaSplitMode, setMangaSplitMode] = useState<boolean>(true);
   const [queueToast, setQueueToast] = useState<string | null>(null);
   const [editingTagsVideo, setEditingTagsVideo] = useState<VaultVideoItem | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -193,6 +308,11 @@ export default function VaultStreamApp() {
 
   const handlePlayVideo = useCallback(
     (video: VaultVideoItem, startTimeSec?: number) => {
+      // Manga opens in its dedicated reader WITHOUT stopping any playing video!
+      if (video.kind === "manga") {
+        setActiveManga(video);
+        return;
+      }
       if (typeof startTimeSec === "number" && Number.isFinite(startTimeSec)) {
         setStartTimeOverride(Math.max(0, startTimeSec));
       } else {
@@ -215,6 +335,15 @@ export default function VaultStreamApp() {
       });
     },
     []
+  );
+
+  const handleOpenCrossMediaSet = useCallback(
+    (mangaItem: VaultVideoItem, videoItem: VaultVideoItem) => {
+      setMangaSplitMode(true);
+      setActiveManga(mangaItem);
+      handlePlayVideo(videoItem);
+    },
+    [handlePlayVideo]
   );
 
   const handleSelectQueueIndex = useCallback((idx: number) => {
@@ -242,11 +371,12 @@ export default function VaultStreamApp() {
 
   const handlePlayAllFiltered = useCallback(
     (items: VaultVideoItem[]) => {
-      if (items.length === 0) return;
+      const playable = items.filter((v) => v.kind !== "manga");
+      if (playable.length === 0) return;
       setStartTimeOverride(null);
-      setQueue(items);
+      setQueue(playable);
       setQueueIndex(0);
-      showQueueToast(`${items.length} 本をキューで連続再生します`);
+      showQueueToast(`${playable.length} 本をキューで連続再生します`);
     },
     [showQueueToast]
   );
@@ -397,15 +527,14 @@ export default function VaultStreamApp() {
       existingKey: CryptoKey | null = null,
       forceFullScan = false
     ) => {
-      let cleanFolderId = targetFolderId.trim();
+      const cleanFolderId = targetFolderId.trim();
+      if (!cleanFolderId) {
+        setError("Google Drive フォルダ ID が設定されていません。");
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
-        if (!cleanFolderId) {
-          cleanFolderId = await ensureVaultRootFolder(token, "VaultStream");
-          setFolderId(cleanFolderId);
-          setSavedFolderIdOverride(cleanFolderId);
-        }
         // Single root inspection call (replaces 3 separate root listings!)
         const snapshot = await inspectVaultRoot(cleanFolderId, token);
         const cfg = snapshot.vaultConfig;
@@ -472,8 +601,13 @@ export default function VaultStreamApp() {
 
           const baseData =
             remoteUserData.updatedAt >= local.updatedAt ? remoteUserData : local;
+          const seededGenres =
+            baseData.customGenres && baseData.customGenres.length > 0
+              ? baseData.customGenres
+              : DEFAULT_CUSTOM_GENRES.map((g) => ({ ...g }));
           const mergedUserData: SyncedVaultUserData = {
             ...baseData,
+            customGenres: seededGenres,
             progress: mergedProgress,
           };
           setUserData(mergedUserData);
@@ -536,7 +670,7 @@ export default function VaultStreamApp() {
     if (savedFolder) setFolderId(savedFolder);
 
     const savedAuth = loadAuthSession();
-    if (savedAuth) {
+    if (savedAuth && resolvedFolder) {
       setAccessToken(savedAuth.accessToken);
       loadLibrary(savedAuth.accessToken, resolvedFolder);
     }
@@ -583,6 +717,7 @@ export default function VaultStreamApp() {
     clearAuthSession();
     clearSavedPassphrase();
     clearThumbnailCache(true);
+    clearMangaPageCache();
     clearSegmentCache();
     clearCachedVideoList(folderId);
     syncFileIdRef.current = null;
@@ -592,6 +727,7 @@ export default function VaultStreamApp() {
     setVideos([]);
     setQueue([]);
     setQueueIndex(-1);
+    setActiveManga(null);
     setError(null);
   };
 
@@ -622,12 +758,14 @@ export default function VaultStreamApp() {
   const handleLockVault = () => {
     clearSavedPassphrase();
     clearThumbnailCache(false);
+    clearMangaPageCache();
     clearSegmentCache();
     clearCachedVideoList(folderId);
     setMasterKey(null);
     setVideos([]);
     setQueue([]);
     setQueueIndex(-1);
+    setActiveManga(null);
     setPassphraseInput("");
   };
 
@@ -694,7 +832,11 @@ export default function VaultStreamApp() {
   );
 
   const handleThumbnailUpdated = useCallback(
-    (videoId: string, capturedTimeSec: number) => {
+    (videoId: string, capturedTimeSec: number, updatedAtIso?: string) => {
+      const stamp = updatedAtIso || new Date().toISOString();
+      setVideos((prev) =>
+        prev.map((v) => (v.id === videoId ? { ...v, thumbnailModifiedTime: stamp } : v))
+      );
       setThumbVersions((prev) => ({
         ...prev,
         [videoId]: (prev[videoId] ?? 0) + 1,
@@ -705,13 +847,40 @@ export default function VaultStreamApp() {
           ...prev,
           videoMeta: {
             ...prev.videoMeta,
-            [videoId]: { ...cur, thumbnailTimeSec: capturedTimeSec },
+            [videoId]: {
+              ...cur,
+              thumbnailTimeSec: capturedTimeSec,
+              thumbnailUpdatedAt: stamp,
+            },
           },
         };
       });
     },
     [updateUserData]
   );
+
+  // Sync user-chosen custom thumbnail stamps from user_meta.enc onto all loaded videos
+  // so every device (PC, iPhone, iPad) immediately invalidates stale IndexedDB thumbnails!
+  useEffect(() => {
+    const metaMap = userData.videoMeta;
+    setVideos((prev) => {
+      let changed = false;
+      const next = prev.map((v) => {
+        const meta = metaMap[v.id];
+        const effectiveStamp =
+          meta?.thumbnailUpdatedAt ??
+          (typeof meta?.thumbnailTimeSec === "number"
+            ? `custom-${Math.round(meta.thumbnailTimeSec * 10)}`
+            : undefined);
+        if (effectiveStamp && v.thumbnailModifiedTime !== effectiveStamp) {
+          changed = true;
+          return { ...v, thumbnailModifiedTime: effectiveStamp };
+        }
+        return v;
+      });
+      return changed ? next : prev;
+    });
+  }, [userData.videoMeta, videos.length]);
 
   const handleToggleFavorite = useCallback(
     (videoId: string) => {
@@ -732,10 +901,10 @@ export default function VaultStreamApp() {
   const videoGenresMap = useMemo(() => {
     const map: Record<string, string[]> = {};
     for (const v of videos) {
-      map[v.id] = getEffectiveGenres(v, userMetaMap[v.id], useAutoGenres);
+      map[v.id] = getEffectiveGenres(v, userMetaMap[v.id], useAutoGenres, customGenres);
     }
     return map;
-  }, [videos, userMetaMap, useAutoGenres]);
+  }, [videos, userMetaMap, useAutoGenres, customGenres]);
 
   const handleCreateCustomGenre = useCallback(
     (name: string, color: string) => {
@@ -753,6 +922,19 @@ export default function VaultStreamApp() {
     },
     [updateUserData]
   );
+
+  const handleSeedDefaultGenres = useCallback(() => {
+    updateUserData((prev) => {
+      const existing = new Set(prev.customGenres.map((g) => g.name));
+      const additions = DEFAULT_CUSTOM_GENRES.filter((g) => !existing.has(g.name));
+      if (additions.length === 0) return prev;
+      return {
+        ...prev,
+        customGenres: [...prev.customGenres, ...additions],
+      };
+    });
+    showQueueToast("定番ジャンル一覧を追加しました！");
+  }, [updateUserData, showQueueToast]);
 
   const handleRenameCustomGenre = useCallback(
     (oldName: string, newNameRaw: string) => {
@@ -814,7 +996,7 @@ export default function VaultStreamApp() {
 
       updateUserData((prev) => {
         const cur = prev.videoMeta[videoId] ?? {};
-        const effective = getEffectiveGenres(video, cur, prev.useAutoGenres);
+        const effective = getEffectiveGenres(video, cur, prev.useAutoGenres, prev.customGenres);
         const currentlyHas = effective.includes(genre);
 
         const added = new Set(cur.addedGenres ?? []);
@@ -829,9 +1011,8 @@ export default function VaultStreamApp() {
         }
 
         const hasInCustom = prev.customGenres.some((g) => g.name === genre);
-        const isPreset = GENRE_RULES.some((r) => r.name === genre);
         const nextCustomGenres =
-          !currentlyHas && !hasInCustom && !isPreset
+          !currentlyHas && !hasInCustom && !CATEGORY_TAG_SET.has(genre)
             ? [{ name: genre, color: "rose" }, ...prev.customGenres]
             : prev.customGenres;
 
@@ -935,22 +1116,33 @@ export default function VaultStreamApp() {
     });
   }, []);
 
-  // Genre counts across the library (always include user's customGenres even when 0)
+  // Genre counts scoped to current category tab — unified strictly to user's 作成済みマイジャンル!
   const genreCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const cg of customGenres) {
-      counts.set(cg.name, 0);
+      if (cg.name && !CATEGORY_TAG_SET.has(cg.name)) {
+        counts.set(cg.name, 0);
+      }
     }
-    for (const v of videos) {
-      for (const g of videoGenresMap[v.id] ?? []) {
+    const scopedVideos = videos.filter((v) => {
+      if (categoryTab === "all") return true;
+      if (categoryTab === "漫画") {
+        return v.kind === "manga" || (videoGenresMap[v.id] ?? []).includes("漫画");
+      }
+      return v.kind !== "manga" && (videoGenresMap[v.id] ?? []).includes(categoryTab);
+    });
+    for (const v of scopedVideos) {
+      for (const g of getContentGenresOnly(videoGenresMap[v.id] ?? [])) {
         counts.set(g, (counts.get(g) ?? 0) + 1);
       }
     }
     return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  }, [videos, videoGenresMap, customGenres]);
+  }, [videos, videoGenresMap, customGenres, categoryTab]);
 
   const uncategorizedCount = useMemo(
-    () => videos.filter((v) => (videoGenresMap[v.id] ?? []).length === 0).length,
+    () =>
+      videos.filter((v) => getContentGenresOnly(videoGenresMap[v.id] ?? []).length === 0)
+        .length,
     [videos, videoGenresMap]
   );
 
@@ -968,16 +1160,40 @@ export default function VaultStreamApp() {
   }, []);
 
   const resetAllFilters = () => {
+    setCategoryTab("all");
     setSearchQuery("");
     setSelectedGenres([]);
     setOnlyUncategorized(false);
     setDurationFilter("all");
     setQualityFilter("all");
     setWatchFilter("all");
-    setSortMode("newest");
+    setSortMode("random");
+    reshuffleHome();
   };
 
+  const realVideoCount = useMemo(
+    () => videos.filter((v) => (videoGenresMap[v.id] ?? []).includes("現実")).length,
+    [videos, videoGenresMap]
+  );
+
+  const animeVideoCount = useMemo(
+    () =>
+      videos.filter(
+        (v) => v.kind !== "manga" && (videoGenresMap[v.id] ?? []).includes("アニメ")
+      ).length,
+    [videos, videoGenresMap]
+  );
+
+  const mangaCount = useMemo(
+    () =>
+      videos.filter(
+        (v) => v.kind === "manga" || (videoGenresMap[v.id] ?? []).includes("漫画")
+      ).length,
+    [videos, videoGenresMap]
+  );
+
   const activeFilterCount =
+    (categoryTab !== "all" ? 1 : 0) +
     selectedGenres.length +
     (onlyUncategorized ? 1 : 0) +
     (durationFilter !== "all" ? 1 : 0) +
@@ -1010,6 +1226,16 @@ export default function VaultStreamApp() {
       list = list.filter((v) => Boolean(progressMap[v.id]?.updatedAt));
     }
 
+    if (categoryTab === "漫画") {
+      list = list.filter(
+        (v) => v.kind === "manga" || (videoGenresMap[v.id] ?? []).includes("漫画")
+      );
+    } else if (categoryTab !== "all") {
+      list = list.filter(
+        (v) => v.kind !== "manga" && (videoGenresMap[v.id] ?? []).includes(categoryTab)
+      );
+    }
+
     const rawTokens = searchQuery
       .trim()
       .toLowerCase()
@@ -1035,7 +1261,7 @@ export default function VaultStreamApp() {
     }
 
     if (onlyUncategorized || watchFilter === "uncategorized") {
-      list = list.filter((v) => (videoGenresMap[v.id] ?? []).length === 0);
+      list = list.filter((v) => getContentGenresOnly(videoGenresMap[v.id] ?? []).length === 0);
     } else if (selectedGenres.length > 0) {
       list = list.filter((v) => {
         const gList = videoGenresMap[v.id] ?? [];
@@ -1079,10 +1305,14 @@ export default function VaultStreamApp() {
     }
 
     const effectiveSort: SortMode =
-      navSection === "history" && sortMode === "newest" ? "recent_played" : sortMode;
+      navSection === "history" && (sortMode === "newest" || sortMode === "random")
+        ? "recent_played"
+        : sortMode;
 
     list.sort((a, b) => {
       switch (effectiveSort) {
+        case "random":
+          return seededOrderHash(a.id, homeShuffleSeed) - seededOrderHash(b.id, homeShuffleSeed);
         case "oldest":
           return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
         case "title_asc":
@@ -1109,6 +1339,7 @@ export default function VaultStreamApp() {
   }, [
     videos,
     navSection,
+    categoryTab,
     userMetaMap,
     progressMap,
     searchQuery,
@@ -1120,6 +1351,7 @@ export default function VaultStreamApp() {
     qualityFilter,
     watchFilter,
     sortMode,
+    homeShuffleSeed,
   ]);
 
   const totalLibraryBytes = useMemo(
@@ -1127,20 +1359,69 @@ export default function VaultStreamApp() {
     [videos]
   );
 
-  const relatedVideos = useMemo(() => {
-    if (!activeVideo) return [];
-    const activeGenres = new Set(videoGenresMap[activeVideo.id] ?? []);
-    return videos
-      .filter((v) => v.id !== activeVideo.id)
-      .map((v) => {
-        const overlap = (videoGenresMap[v.id] ?? []).filter((g) =>
-          activeGenres.has(g)
-        ).length;
-        return { video: v, overlap };
-      })
-      .sort((a, b) => b.overlap - a.overlap)
-      .slice(0, 6)
-      .map((entry) => entry.video);
+  // Automatic local Manga <-> Anime title pairing (zero external API calls)
+  const crossMedia = useMemo(() => buildCrossMediaIndex(videos), [videos]);
+
+  // Gentle background low-priority thumbnail pre-warmer so fast swiping renders in 0ms
+  useEffect(() => {
+    if (!accessToken || filteredVideos.length === 0) return;
+    // Pause background thumb warming while actively watching video or reading manga
+    if (activeVideo || activeManga) return;
+
+    const needsWarm = filteredVideos
+      .slice(0, 150)
+      .filter(
+        (v) =>
+          v.thumbnailFileId &&
+          (!v.encrypted || masterKey) &&
+          !getSyncCachedThumbnailUrl(
+            v.thumbnailFileId,
+            Boolean(v.encrypted),
+            v.thumbnailModifiedTime
+          )
+      );
+    if (needsWarm.length === 0) return;
+
+    let cancelled = false;
+    let cursor = 0;
+
+    const worker = async () => {
+      while (!cancelled) {
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= needsWarm.length) break;
+        const v = needsWarm[idx];
+        if (!v.thumbnailFileId) continue;
+        try {
+          await driveFetchCachedThumbnailUrl(
+            v.thumbnailFileId,
+            accessToken,
+            Boolean(v.encrypted),
+            masterKey,
+            v.thumbnailModifiedTime,
+            "low"
+          );
+        } catch {
+          // Ignore individual background warm-up errors
+        }
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        Promise.all(Array.from({ length: 4 }, () => worker())).catch(() => undefined);
+      }
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [accessToken, masterKey, filteredVideos, activeVideo, activeManga]);
+
+  const { seriesVideos, relatedVideos } = useMemo(() => {
+    if (!activeVideo) return { seriesVideos: [], relatedVideos: [] };
+    return findSeriesAndRelatedVideos(activeVideo, videos, videoGenresMap, 6);
   }, [activeVideo, videos, videoGenresMap]);
 
   const effectiveViewMode: ViewMode = navSection === "files" ? "list" : viewMode;
@@ -1192,6 +1473,7 @@ export default function VaultStreamApp() {
               onClick={() => {
                 setNavSection("home");
                 setSelectedGenres([]);
+                reshuffleHome();
                 setOnlyUncategorized(false);
               }}
               className="flex items-center gap-2.5 text-left"
@@ -1408,9 +1690,14 @@ export default function VaultStreamApp() {
                 <span className="text-zinc-400">並び替え:</span>
                 <select
                   value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value as SortMode)}
+                  onChange={(e) => {
+                    const next = e.target.value as SortMode;
+                    setSortMode(next);
+                    if (next === "random") reshuffleHome();
+                  }}
                   className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-200 focus:border-rose-500 focus:outline-none"
                 >
+                  <option value="random">ランダム（毎回変わる）</option>
                   <option value="newest">追加が新しい順</option>
                   <option value="oldest">追加が古い順</option>
                   <option value="recent_played">最近再生した順</option>
@@ -1496,28 +1783,16 @@ export default function VaultStreamApp() {
 
             <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4 text-left text-xs text-zinc-400">
               <div className="flex items-center justify-between py-1">
-                <span>保存先フォルダ</span>
+                <span>保存先フォルダ ID</span>
                 <code className="max-w-[60%] truncate text-zinc-200">
-                  {effectiveFolderIdValid ? folderId : "ログイン時に VaultStream フォルダを自動作成"}
+                  {effectiveFolderIdValid ? folderId : "未設定"}
                 </code>
               </div>
               <div className="flex items-center justify-between py-1">
                 <span>OAuth クライアント</span>
                 <span className={effectiveClientIdValid ? "text-emerald-400" : "text-amber-400"}>
-                  {effectiveClientIdValid ? "設定済み" : "未設定（⚙設定から入力）"}
+                  {effectiveClientIdValid ? "設定済み" : "未設定"}
                 </span>
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-emerald-500/20 bg-emerald-950/20 p-3.5 text-left text-[11px] leading-relaxed text-emerald-200/90">
-              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
-              <div>
-                <p className="font-semibold text-emerald-200">
-                  ゼロサーバー ＆ 最小権限（drive.file）設計
-                </p>
-                <p className="mt-0.5 text-emerald-200/80">
-                  VaultStream 自身が作成した専用フォルダのみにアクセスし、Google Drive 内の他のファイルは一切読み取りません。動画・トークン・パスワードはブラウザ内のみで処理され、外部サーバーには一切送信されません。
-                </p>
               </div>
             </div>
 
@@ -1525,7 +1800,7 @@ export default function VaultStreamApp() {
               type="button"
               onClick={handleSignIn}
               disabled={authLoading}
-              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
+              className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-600 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500 disabled:opacity-50"
             >
               <LogIn className="h-4 w-4" />
               {authLoading ? "Google に接続しています..." : "Google アカウントでログイン"}
@@ -1538,14 +1813,6 @@ export default function VaultStreamApp() {
               <Link href="/terms" className="hover:text-zinc-300 hover:underline">
                 利用規約 (Terms)
               </Link>
-              <a
-                href="https://github.com/hiyasitomato/vaultstream"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-zinc-300 hover:underline"
-              >
-                GitHub (MIT Open Source)
-              </a>
             </div>
           </section>
         </main>
@@ -1625,7 +1892,10 @@ export default function VaultStreamApp() {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setNavSection(item.id)}
+                    onClick={() => {
+                      setNavSection(item.id);
+                      if (item.id === "home") reshuffleHome();
+                    }}
                     className={`flex w-full items-center rounded-xl transition ${
                       sidebarExpanded
                         ? "justify-between px-3 py-2.5 text-sm"
@@ -1716,6 +1986,48 @@ export default function VaultStreamApp() {
               </div>
             )}
 
+            {/* Top-level 現実 / アニメ / 漫画 Category Switcher */}
+            {navSection !== "genres" && (
+              <div className="mb-3.5 flex flex-wrap items-center gap-2">
+                <div className="inline-flex items-center rounded-xl border border-zinc-800 bg-zinc-900/90 p-1">
+                  {(
+                    [
+                      { id: "all", label: "すべて", count: videos.length, activeCls: "bg-white text-zinc-950" },
+                      { id: "現実", label: "現実", count: realVideoCount, activeCls: "bg-sky-500 text-white shadow-sm shadow-sky-500/30" },
+                      { id: "アニメ", label: "アニメ", count: animeVideoCount, activeCls: "bg-fuchsia-500 text-white shadow-sm shadow-fuchsia-500/30" },
+                      { id: "漫画", label: "漫画", count: mangaCount, activeCls: "bg-amber-500 text-zinc-950 shadow-sm shadow-amber-500/30" },
+                    ] as const
+                  ).map((tab) => {
+                    const active = categoryTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                        setCategoryTab(tab.id);
+                        if (sortMode === "random") reshuffleHome();
+                      }}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${
+                          active
+                            ? tab.activeCls
+                            : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                        }`}
+                      >
+                        <span>{tab.label}</span>
+                        <span
+                          className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] ${
+                            active ? "bg-black/20" : "bg-zinc-800 text-zinc-400"
+                          }`}
+                        >
+                          {tab.count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* YouTube-style Horizontal Genre Chip Bar */}
             {navSection !== "genres" && (
               <div className="mb-5 flex items-center gap-2 overflow-x-auto pb-2 [scrollbar-width:none]">
@@ -1731,7 +2043,7 @@ export default function VaultStreamApp() {
                       : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
                   }`}
                 >
-                  すべて
+                  すべてのジャンル
                 </button>
 
                 {uncategorizedCount > 0 && (
@@ -1752,7 +2064,9 @@ export default function VaultStreamApp() {
                   </button>
                 )}
 
-                {genreCounts.map(([genre, count]) => {
+                {genreCounts
+                  .filter(([genre]) => genre !== "現実" && genre !== "アニメ" && genre !== "漫画")
+                  .map(([genre, count]) => {
                   const selected = selectedGenres.includes(genre);
                   return (
                     <button
@@ -1834,7 +2148,7 @@ export default function VaultStreamApp() {
                       type="text"
                       value={newGenreName}
                       onChange={(e) => setNewGenreName(e.target.value)}
-                      placeholder="新しいジャンル名を入力..."
+                      placeholder="ジャンル名を入力（例: お気に入り、コスプレ、素人、アニメ、神回...）"
                       className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
                     />
                     <button
@@ -1870,18 +2184,30 @@ export default function VaultStreamApp() {
                     <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-300">
                       作成済みマイジャンル ({customGenres.length})
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNavSection("home");
-                        setSelectionMode(true);
-                        setSelectedVideoIds(new Set());
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25"
-                    >
-                      <CheckSquare className="h-3.5 w-3.5" />
-                      ホームで動画を一括振り分けする
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {DEFAULT_CUSTOM_GENRES.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleSeedDefaultGenres}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:border-purple-500/50 hover:bg-zinc-800"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          定番ジャンル一覧を追加
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNavSection("home");
+                          setSelectionMode(true);
+                          setSelectedVideoIds(new Set());
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25"
+                      >
+                        <CheckSquare className="h-3.5 w-3.5" />
+                        ホームで動画を一括振り分けする
+                      </button>
+                    </div>
                   </div>
 
                   {customGenres.length === 0 ? (
@@ -2015,12 +2341,88 @@ export default function VaultStreamApp() {
                             thumbnailTimeSec={userMetaMap[video.id]?.thumbnailTimeSec}
                             thumbVersion={thumbVersions[video.id] ?? 0}
                             compact
+                            linkedItems={crossMedia.linkedById[video.id]}
+                            onOpenCrossMediaSet={handleOpenCrossMediaSet}
                             onSelect={handlePlayVideo}
                             onAddToQueue={handleAddToQueue}
                             onToggleFavorite={handleToggleFavorite}
                             onEditTags={setEditingTagsVideo}
                             onClickGenre={handleClickGenreFromCard}
                           />
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                {/* Manga x Anime Paired Sets Shelf */}
+                {navSection === "home" &&
+                  (categoryTab === "all" || categoryTab === "漫画" || categoryTab === "アニメ") &&
+                  !searchQuery &&
+                  selectedGenres.length === 0 &&
+                  !onlyUncategorized &&
+                  crossMedia.sets.length > 0 && (
+                    <section className="mb-7">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-amber-400" />
+                          <h2 className="text-sm font-bold text-white">
+                            漫画 × アニメ セット（{crossMedia.sets.length} 作品）
+                          </h2>
+                        </div>
+                        <span className="text-[11px] text-zinc-400">
+                          同じ作品を 1 タップで同時視聴
+                        </span>
+                      </div>
+                      <div className="flex gap-3.5 overflow-x-auto pb-2">
+                        {crossMedia.sets.map((set) => (
+                          <div
+                            key={`set-${set.manga.id}`}
+                            className="flex w-72 shrink-0 flex-col gap-2.5 rounded-2xl border border-amber-400/25 bg-gradient-to-br from-amber-500/[0.08] via-zinc-900/75 to-sky-500/[0.08] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)] backdrop-blur-xl sm:w-80"
+                          >
+                            <div className="flex items-center gap-2">
+                              <CrossMediaMiniThumb
+                                item={set.manga}
+                                accessToken={accessToken}
+                                masterKey={masterKey}
+                                label={`漫画 ${set.manga.pageCount ?? set.manga.manifest?.pageCount ?? set.manga.manifest?.pages?.length ?? 0}P`}
+                                thumbVersion={thumbVersions[set.manga.id] ?? 0}
+                              />
+                              <CrossMediaMiniThumb
+                                item={set.videos[0]}
+                                accessToken={accessToken}
+                                masterKey={masterKey}
+                                label={`アニメ ${set.videos.length}本`}
+                                thumbVersion={thumbVersions[set.videos[0].id] ?? 0}
+                              />
+                            </div>
+                            <p className="line-clamp-1 text-xs font-bold text-white">
+                              {set.manga.title}
+                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenCrossMediaSet(set.manga, set.videos[0])}
+                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 px-3 py-1.5 text-[11px] font-bold text-zinc-950 shadow-sm transition hover:brightness-110"
+                              >
+                                <Sparkles className="h-3 w-3" />
+                                <span>同時に開く</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePlayVideo(set.manga)}
+                                className="rounded-xl border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-[11px] font-semibold text-zinc-200 transition hover:bg-white/[0.14]"
+                              >
+                                漫画
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePlayVideo(set.videos[0])}
+                                className="rounded-xl border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-[11px] font-semibold text-zinc-200 transition hover:bg-white/[0.14]"
+                              >
+                                アニメ
+                              </button>
+                            </div>
+                          </div>
                         ))}
                       </div>
                     </section>
@@ -2086,11 +2488,29 @@ export default function VaultStreamApp() {
                       <span>{selectionMode ? "選択モード終了" : "一括ジャンル分け"}</span>
                     </button>
 
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSortMode("random");
+                        reshuffleHome();
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-rose-500/50 hover:bg-zinc-800 hover:text-white"
+                      title="並びを新しくシャッフル"
+                    >
+                      <Shuffle className="h-3.5 w-3.5 text-rose-400" />
+                      <span>シャッフル</span>
+                    </button>
+
                     <select
                       value={sortMode}
-                      onChange={(e) => setSortMode(e.target.value as SortMode)}
+                      onChange={(e) => {
+                        const next = e.target.value as SortMode;
+                        setSortMode(next);
+                        if (next === "random") reshuffleHome();
+                      }}
                       className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 focus:border-rose-500 focus:outline-none"
                     >
+                      <option value="random">ランダム</option>
                       <option value="newest">新しい順</option>
                       <option value="recent_played">最近再生順</option>
                       <option value="title_asc">名前順 (A→Z)</option>
@@ -2172,7 +2592,13 @@ export default function VaultStreamApp() {
                     </div>
                   </div>
                 ) : effectiveViewMode === "grid" ? (
-                  <div className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <div
+                    className={
+                      categoryTab === "漫画"
+                        ? "grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+                        : "grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                    }
+                  >
                     {filteredVideos.map((video) => (
                       <VideoCard
                         key={video.id}
@@ -2186,8 +2612,11 @@ export default function VaultStreamApp() {
                         progress={progressMap[video.id]}
                         thumbnailTimeSec={userMetaMap[video.id]?.thumbnailTimeSec}
                         thumbVersion={thumbVersions[video.id] ?? 0}
+                        portraitCover={categoryTab === "漫画"}
                         selectionMode={selectionMode}
                         isSelected={selectedVideoIds.has(video.id)}
+                        linkedItems={crossMedia.linkedById[video.id]}
+                        onOpenCrossMediaSet={handleOpenCrossMediaSet}
                         onToggleSelect={handleToggleSelectVideo}
                         onSelect={handlePlayVideo}
                         onAddToQueue={handleAddToQueue}
@@ -2222,6 +2651,8 @@ export default function VaultStreamApp() {
                         thumbVersion={thumbVersions[video.id] ?? 0}
                         selectionMode={selectionMode}
                         isSelected={selectedVideoIds.has(video.id)}
+                        linkedItems={crossMedia.linkedById[video.id]}
+                        onOpenCrossMediaSet={handleOpenCrossMediaSet}
                         onToggleSelect={handleToggleSelectVideo}
                         onSelect={handlePlayVideo}
                         onAddToQueue={handleAddToQueue}
@@ -2379,6 +2810,7 @@ export default function VaultStreamApp() {
           progressMap={progressMap}
           thumbVersions={thumbVersions}
           isFavorite={Boolean(userMetaMap[activeVideo.id]?.favorite)}
+          seriesVideos={seriesVideos}
           relatedVideos={relatedVideos}
           queue={queue}
           queueIndex={queueIndex}
@@ -2386,6 +2818,11 @@ export default function VaultStreamApp() {
           initialStartTimeSec={startTimeOverride}
           initialStartNonce={startTimeNonce}
           thumbnailTimeSec={userMetaMap[activeVideo.id]?.thumbnailTimeSec}
+          hasActiveManga={Boolean(activeManga)}
+          linkedManga={crossMedia.linkedById[activeVideo.id] ?? []}
+          splitWithManga={mangaSplitMode}
+          onToggleSplitWithManga={() => setMangaSplitMode((prev) => !prev)}
+          onEnableSplitWithManga={() => setMangaSplitMode(true)}
           onClose={handleClosePlayer}
           onSelectVideo={handlePlayVideo}
           onSelectQueueIndex={handleSelectQueueIndex}
@@ -2400,6 +2837,32 @@ export default function VaultStreamApp() {
           onProgressUpdated={handleProgressUpdated}
           onThumbnailUpdated={handleThumbnailUpdated}
           onAuthExpired={handleAuthExpired}
+        />
+      )}
+
+      {/* E2EE Manga Reader (with Auto-Slide & Simultaneous Video Mode!) */}
+      {activeManga && accessToken && (
+        <MangaReaderModal
+          manga={activeManga}
+          allVideos={videos}
+          linkedVideos={crossMedia.linkedById[activeManga.id] ?? []}
+          accessToken={accessToken}
+          masterKey={masterKey}
+          isFavorite={Boolean(userMetaMap[activeManga.id]?.favorite)}
+          initialProgress={progressMap[activeManga.id]}
+          hasActiveVideo={Boolean(activeVideo)}
+          activeVideoTitle={activeVideo?.title}
+          splitWithVideo={mangaSplitMode}
+          onToggleSplitWithVideo={() => setMangaSplitMode((prev) => !prev)}
+          onEnableSplitWithVideo={() => setMangaSplitMode(true)}
+          onSelectVideo={handlePlayVideo}
+          onToggleFavorite={handleToggleFavorite}
+          onEditTags={setEditingTagsVideo}
+          onProgressUpdated={handleProgressUpdated}
+          onThumbnailUpdated={handleThumbnailUpdated}
+          thumbVersions={thumbVersions}
+          onAuthExpired={handleAuthExpired}
+          onClose={() => setActiveManga(null)}
         />
       )}
 
@@ -2456,10 +2919,6 @@ export default function VaultStreamApp() {
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 px-3.5 py-2.5 text-[11px] leading-relaxed text-emerald-200/90">
-                🔒 入力した設定はあなたのブラウザ内（localStorage）のみに保存され、外部サーバーへ送信されることはありません。
-              </div>
-
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
                   Web 用 Google OAuth クライアント ID
@@ -2475,30 +2934,16 @@ export default function VaultStreamApp() {
 
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-300">
-                  Google Drive フォルダ ID（空欄ならログイン時に VaultStream フォルダを自動作成）
+                  Google Drive フォルダ ID（フォルダ URL をそのまま貼っても OK）
                 </label>
                 <input
                   type="text"
                   value={draftFolderId}
                   onChange={(e) => setDraftFolderId(e.target.value)}
-                  placeholder="空欄で自動作成（またはフォルダ URL / ID を貼り付け）"
+                  placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz123456"
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
                 />
               </div>
-
-              <details className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-3.5 py-2.5 text-[11px] text-zinc-400">
-                <summary className="cursor-pointer font-semibold text-zinc-200">
-                  自分の OAuth クライアント ID を作る手順（3 分）
-                </summary>
-                <ol className="mt-2 list-decimal space-y-1 pl-4 leading-relaxed">
-                  <li>Google Cloud Console で無料プロジェクトを作成</li>
-                  <li>「API とサービス → ライブラリ」で Google Drive API を有効化</li>
-                  <li>「OAuth 同意画面」を外部 / テストにし、テストユーザーに自分の Gmail を追加</li>
-                  <li>「クライアントを作成 → ウェブアプリケーション」を選択</li>
-                  <li>「承認済みの JavaScript 生成元」にこのサイトの URL（末尾の / なし）を登録</li>
-                  <li>発行されたクライアント ID を上の欄に貼り付けて保存！</li>
-                </ol>
-              </details>
             </div>
 
             <div className="mt-6 flex justify-end gap-2">

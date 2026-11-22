@@ -16,8 +16,14 @@ export interface VaultQualityVariant {
   segments: Record<string, string>;
 }
 
+export interface VaultMangaPage {
+  fileId: string;
+  mimeType?: string;
+}
+
 export interface VaultManifest {
   version: number;
+  kind?: "hls" | "direct" | "manga";
   encrypted?: boolean;
   id: string;
   title: string;
@@ -34,6 +40,8 @@ export interface VaultManifest {
   hlsKeyBase64?: string;
   segments?: Record<string, string>;
   variants?: VaultQualityVariant[];
+  pageCount?: number;
+  pages?: VaultMangaPage[];
   sourceFileName?: string;
   genres?: string[];
 }
@@ -47,7 +55,7 @@ export interface VaultVideoItem {
   width?: number;
   height?: number;
   sizeBytes?: number;
-  kind: "hls" | "direct";
+  kind: "hls" | "direct" | "manga";
   encrypted?: boolean;
   manifest?: VaultManifest;
   directFileId?: string;
@@ -55,6 +63,7 @@ export interface VaultVideoItem {
   thumbnailFileId?: string;
   thumbnailModifiedTime?: string;
   spriteFileId?: string;
+  pageCount?: number;
   sourceFileName?: string;
 }
 
@@ -80,6 +89,7 @@ export interface VideoUserMeta {
   addedGenres?: string[];
   removedGenres?: string[];
   thumbnailTimeSec?: number;
+  thumbnailUpdatedAt?: string;
 }
 
 export interface CustomGenreDef {
@@ -99,6 +109,7 @@ export interface SyncedVaultUserData {
 export type NavSection = "home" | "genres" | "favorites" | "history" | "files";
 export type ViewMode = "grid" | "list";
 export type SortMode =
+  | "random"
   | "newest"
   | "oldest"
   | "title_asc"

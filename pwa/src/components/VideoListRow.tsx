@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Tag } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Camera, Check, Film, Heart, ListChecks, ListPlus, Play, Plus, Sparkles, Tag } from "lucide-react";
 import {
   driveFetchCachedThumbnailUrl,
   formatBytes,
   formatDuration,
+  getSyncCachedThumbnailUrl,
 } from "@/lib/drive";
-import { getGenreStyle } from "@/lib/genres";
+import { getContentGenresOnly, getGenreStyle } from "@/lib/genres";
 import type { CustomGenreDef, PlaybackProgress, VaultVideoItem } from "@/lib/types";
 
 interface VideoListRowProps {
@@ -23,6 +24,8 @@ interface VideoListRowProps {
   thumbVersion?: number;
   selectionMode?: boolean;
   isSelected?: boolean;
+  linkedItems?: VaultVideoItem[];
+  onOpenCrossMediaSet?: (manga: VaultVideoItem, video: VaultVideoItem) => void;
   onToggleSelect?: (videoId: string) => void;
   onSelect: (video: VaultVideoItem, startTimeSec?: number) => void;
   onAddToQueue: (video: VaultVideoItem) => void;
@@ -44,6 +47,8 @@ export default function VideoListRow({
   thumbVersion = 0,
   selectionMode = false,
   isSelected = false,
+  linkedItems,
+  onOpenCrossMediaSet,
   onToggleSelect,
   onSelect,
   onAddToQueue,
@@ -51,7 +56,58 @@ export default function VideoListRow({
   onEditTags,
   onClickGenre,
 }: VideoListRowProps) {
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [inView, setInView] = useState(() =>
+    Boolean(
+      getSyncCachedThumbnailUrl(
+        video.thumbnailFileId,
+        Boolean(video.encrypted),
+        video.thumbnailModifiedTime
+      )
+    )
+  );
+  const [isVisibleNow, setIsVisibleNow] = useState(false);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(() =>
+    getSyncCachedThumbnailUrl(
+      video.thumbnailFileId,
+      Boolean(video.encrypted),
+      video.thumbnailModifiedTime
+    )
+  );
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setInView(true);
+      setIsVisibleNow(true);
+      return;
+    }
+    const preloadObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          preloadObserver.disconnect();
+        }
+      },
+      { rootMargin: "1400px 200px" }
+    );
+    const visibleObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setIsVisibleNow(true);
+          setInView(true);
+          visibleObserver.disconnect();
+        }
+      },
+      { rootMargin: "100px" }
+    );
+    preloadObserver.observe(el);
+    visibleObserver.observe(el);
+    return () => {
+      preloadObserver.disconnect();
+      visibleObserver.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -59,12 +115,24 @@ export default function VideoListRow({
       setThumbUrl(null);
       return;
     }
+    const syncHit = getSyncCachedThumbnailUrl(
+      video.thumbnailFileId,
+      Boolean(video.encrypted),
+      video.thumbnailModifiedTime
+    );
+    if (syncHit) {
+      setThumbUrl(syncHit);
+      return;
+    }
+    if (!inView) return;
+
     driveFetchCachedThumbnailUrl(
       video.thumbnailFileId,
       accessToken,
       Boolean(video.encrypted),
       masterKey,
-      video.thumbnailModifiedTime
+      video.thumbnailModifiedTime,
+      isVisibleNow ? "high" : "normal"
     )
       .then((url) => {
         if (active) setThumbUrl(url);
@@ -75,7 +143,16 @@ export default function VideoListRow({
     return () => {
       active = false;
     };
-  }, [video.thumbnailFileId, video.encrypted, accessToken, masterKey, thumbVersion]);
+  }, [
+    inView,
+    isVisibleNow,
+    video.thumbnailFileId,
+    video.thumbnailModifiedTime,
+    video.encrypted,
+    accessToken,
+    masterKey,
+    thumbVersion,
+  ]);
 
   const progressRatio =
     progress && progress.duration > 0
@@ -113,6 +190,7 @@ export default function VideoListRow({
 
   return (
     <div
+      ref={rowRef}
       className={`group flex flex-col gap-3 rounded-xl border p-2.5 transition sm:flex-row sm:items-center sm:gap-4 sm:px-3.5 ${
         selectionMode && isSelected
           ? "border-rose-500/70 bg-rose-950/20"
@@ -134,21 +212,53 @@ export default function VideoListRow({
         </button>
       )}
 
-      {/* Compact thumbnail */}
-      <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded-lg bg-zinc-950 sm:w-36">
+      {/* Compact thumbnail (Apple Liquid Glass margins) */}
+      <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded-lg bg-[#060609] ring-1 ring-white/15 sm:w-36">
         <button
           type="button"
           onClick={handlePrimaryClick}
-          className="block h-full w-full"
+          onPointerDown={() => {
+            if (video.kind !== "manga" && video.spriteFileId) {
+              driveFetchCachedThumbnailUrl(
+                video.spriteFileId,
+                accessToken,
+                Boolean(video.encrypted),
+                masterKey,
+                undefined,
+                "high"
+              ).catch(() => undefined);
+            }
+          }}
+          className="absolute inset-0 block h-full w-full"
         >
           {thumbUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={thumbUrl}
-              alt={video.title}
-              loading="lazy"
-              className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-            />
+            <div className="absolute inset-0 overflow-hidden bg-[#060609]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={thumbUrl}
+                alt=""
+                aria-hidden="true"
+                decoding="async"
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full scale-125 select-none object-cover opacity-80 blur-xl saturate-[1.8] brightness-[0.34]"
+              />
+              <div
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  background:
+                    "radial-gradient(ellipse 75% 60% at 15% 12%, rgba(255,255,255,0.16), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(8,8,14,0.48) 55%, rgba(255,255,255,0.05) 100%)",
+                }}
+              />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={thumbUrl}
+                alt={video.title}
+                decoding="async"
+                draggable={false}
+                className="absolute inset-0 z-10 h-full w-full select-none object-contain transition-transform duration-200 group-hover:scale-105"
+              />
+              <div className="pointer-events-none absolute inset-0 z-20 rounded-lg shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]" />
+            </div>
           ) : (
             <div className="flex h-full w-full items-center justify-center text-zinc-700">
               <Film className="h-6 w-6" />
@@ -178,11 +288,15 @@ export default function VideoListRow({
             <span>{formatDuration(effectiveThumbTimeSec)}</span>
           </button>
         )}
-        {video.duration > 0 && (
+        {video.kind === "manga" ? (
+          <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/85 px-1 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+            {video.pageCount ?? video.manifest?.pages?.length ?? 0} P
+          </span>
+        ) : video.duration > 0 ? (
           <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/85 px-1 py-0.5 font-mono text-[10px] font-semibold text-white">
             {formatDuration(video.duration)}
           </span>
-        )}
+        ) : null}
         {progressRatio > 1 && (
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-1 bg-zinc-800">
             <div className="h-full bg-rose-500" style={{ width: `${progressRatio}%` }} />
@@ -205,7 +319,29 @@ export default function VideoListRow({
           </p>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
-          {genres.map((genre) => (
+          {!selectionMode && linkedItems && linkedItems.length > 0 && onOpenCrossMediaSet && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const companion = linkedItems[0];
+                if (video.kind === "manga") {
+                  onOpenCrossMediaSet(video, companion);
+                } else {
+                  onOpenCrossMediaSet(companion, video);
+                }
+              }}
+              className="inline-flex items-center gap-1 rounded border border-amber-400/40 bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-200 transition hover:border-amber-300/70 hover:brightness-125"
+            >
+              <Sparkles className="h-2.5 w-2.5 text-amber-300" />
+              <span>
+                {video.kind === "manga"
+                  ? `アニメあり (${linkedItems.length}本)`
+                  : `原作漫画あり`}
+              </span>
+            </button>
+          )}
+          {getContentGenresOnly(genres).map((genre) => (
             <button
               key={genre}
               type="button"

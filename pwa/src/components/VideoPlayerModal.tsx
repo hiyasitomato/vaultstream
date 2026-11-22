@@ -7,11 +7,14 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  BookOpen,
   Camera,
   Check,
+  ChevronDown,
   FastForward,
   Film,
   Heart,
+  Home,
   ListChecks,
   ListMusic,
   ListPlus,
@@ -29,11 +32,14 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Sparkles,
   Tag,
   Trash2,
   Volume2,
   VolumeX,
   X,
+  Zap,
+  ZoomIn,
 } from "lucide-react";
 import {
   buildRewrittenHlsPlaylist,
@@ -42,11 +48,12 @@ import {
   formatBytes,
   formatDuration,
   getSegmentUrlForTime,
+  getSyncCachedThumbnailUrl,
   prefetchHlsPlaylist,
   updateThumbnailInDrive,
   type SegmentTimelineEntry,
 } from "@/lib/drive";
-import { getGenreStyle } from "@/lib/genres";
+import { CATEGORY_TAG_SET, getContentGenresOnly, getGenreStyle } from "@/lib/genres";
 import {
   abortLowPriorityPrefetches,
   createCachedDriveFragmentLoader,
@@ -74,6 +81,7 @@ interface VideoPlayerModalProps {
   progressMap: Record<string, PlaybackProgress>;
   thumbVersions: Record<string, number>;
   isFavorite: boolean;
+  seriesVideos?: VaultVideoItem[];
   relatedVideos: VaultVideoItem[];
   queue: VaultVideoItem[];
   queueIndex: number;
@@ -81,6 +89,11 @@ interface VideoPlayerModalProps {
   initialStartTimeSec?: number | null;
   initialStartNonce?: number;
   thumbnailTimeSec?: number;
+  hasActiveManga?: boolean;
+  linkedManga?: VaultVideoItem[];
+  splitWithManga?: boolean;
+  onToggleSplitWithManga?: () => void;
+  onEnableSplitWithManga?: () => void;
   onClose: () => void;
   onSelectVideo: (video: VaultVideoItem, startTimeSec?: number) => void;
   onSelectQueueIndex: (index: number) => void;
@@ -93,17 +106,37 @@ interface VideoPlayerModalProps {
   onEditTags: (video: VaultVideoItem) => void;
   onClickGenre: (genre: string) => void;
   onProgressUpdated: (videoId: string, progress: PlaybackProgress) => void;
-  onThumbnailUpdated: (videoId: string, capturedTimeSec: number) => void;
+  onThumbnailUpdated: (videoId: string, capturedTimeSec: number, updatedAtIso?: string) => void;
   onAuthExpired: () => void;
 }
 
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2];
 
+function seededOrderHash(id: string, seed: number): number {
+  let h = (seed ^ 0x811c9dc5) >>> 0;
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b) >>> 0;
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
 interface WebKitVideoElement extends HTMLVideoElement {
   webkitSupportsPresentationMode?: (mode: string) => boolean;
   webkitPresentationMode?: string;
   webkitSetPresentationMode?: (mode: string) => void;
-  webkitEnterFullscreen?: () => void;
+}
+
+interface WebKitDocument extends Document {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+}
+
+interface WebKitHTMLElement extends HTMLDivElement {
+  webkitRequestFullscreen?: () => Promise<void> | void;
 }
 
 function SmallThumb({
@@ -117,7 +150,13 @@ function SmallThumb({
   masterKey: CryptoKey | null;
   thumbVersion?: number;
 }) {
-  const [url, setUrl] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(() =>
+    getSyncCachedThumbnailUrl(
+      video.thumbnailFileId,
+      Boolean(video.encrypted),
+      video.thumbnailModifiedTime
+    )
+  );
 
   useEffect(() => {
     let active = true;
@@ -125,11 +164,22 @@ function SmallThumb({
       setUrl(null);
       return;
     }
+    const syncHit = getSyncCachedThumbnailUrl(
+      video.thumbnailFileId,
+      Boolean(video.encrypted),
+      video.thumbnailModifiedTime
+    );
+    if (syncHit) {
+      setUrl(syncHit);
+      return;
+    }
     driveFetchCachedThumbnailUrl(
       video.thumbnailFileId,
       accessToken,
       Boolean(video.encrypted),
-      masterKey
+      masterKey,
+      video.thumbnailModifiedTime,
+      "normal"
     )
       .then((u) => {
         if (active) setUrl(u);
@@ -140,13 +190,24 @@ function SmallThumb({
     return () => {
       active = false;
     };
-  }, [video.thumbnailFileId, video.encrypted, accessToken, masterKey, thumbVersion]);
+  }, [
+    video.thumbnailFileId,
+    video.thumbnailModifiedTime,
+    video.encrypted,
+    accessToken,
+    masterKey,
+    thumbVersion,
+  ]);
 
   return (
-    <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-900">
+    <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-[#060609] ring-1 ring-white/10">
       {url ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={video.title} className="h-full w-full object-cover" />
+        <img
+          src={url}
+          alt={video.title}
+          className="absolute inset-0 h-full w-full object-contain"
+        />
       ) : (
         <div className="flex h-full w-full items-center justify-center text-zinc-700">
           <Film className="h-4 w-4" />
@@ -173,6 +234,7 @@ export default function VideoPlayerModal({
   progressMap,
   thumbVersions,
   isFavorite,
+  seriesVideos = [],
   relatedVideos,
   queue,
   queueIndex,
@@ -180,6 +242,11 @@ export default function VideoPlayerModal({
   initialStartTimeSec = null,
   initialStartNonce = 0,
   thumbnailTimeSec,
+  hasActiveManga = false,
+  linkedManga = [],
+  splitWithManga = false,
+  onToggleSplitWithManga,
+  onEnableSplitWithManga,
   onClose,
   onSelectVideo,
   onSelectQueueIndex,
@@ -223,6 +290,8 @@ export default function VideoPlayerModal({
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPseudoFullscreen, setIsPseudoFullscreen] = useState(false);
+  const anyFullscreen = isFullscreen || isPseudoFullscreen;
   const [controlsVisible, setControlsVisible] = useState(true);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
   const [bufferedPercent, setBufferedPercent] = useState(0);
@@ -231,26 +300,105 @@ export default function VideoPlayerModal({
   const hideControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Storyboard sprite sheet (6x6) + instant poster for zero-black-screen TTFF
-  const [posterUrl, setPosterUrl] = useState<string | null>(null);
-  const [spriteUrl, setSpriteUrl] = useState<string | null>(null);
+  const [posterUrl, setPosterUrl] = useState<string | null>(() =>
+    getSyncCachedThumbnailUrl(
+      video.thumbnailFileId,
+      Boolean(video.encrypted),
+      video.thumbnailModifiedTime
+    )
+  );
+  const [spriteUrl, setSpriteUrl] = useState<string | null>(() =>
+    getSyncCachedThumbnailUrl(video.spriteFileId, Boolean(video.encrypted))
+  );
+  const [spriteGrid, setSpriteGrid] = useState<{ cols: number; rows: number }>({
+    cols: 6,
+    rows: 6,
+  });
   const [hoverSeekRatio, setHoverSeekRatio] = useState<number | null>(null);
+  const [hoverPopupLeftPct, setHoverPopupLeftPct] = useState<number | null>(null);
+  const [isDraggingSeekBar, setIsDraggingSeekBar] = useState(false);
+  const [previewSyncedSec, setPreviewSyncedSec] = useState<number | null>(null);
   const seekBarRef = useRef<HTMLDivElement | null>(null);
+  const zoomSeekBarRef = useRef<HTMLDivElement | null>(null);
   const seekPrefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timelineRef = useRef<SegmentTimelineEntry[]>([]);
   const isDraggingSeekRef = useRef(false);
+  const isDraggingZoomSeekRef = useRef(false);
+  const pendingDragRatioRef = useRef<number | null>(null);
+
+  // Precision Zoomed Seekbar ("拡大シーク") + YouTube-style pull-up 5x fine scrub!
+  const [zoomSeekOpen, setZoomSeekOpen] = useState(false);
+  const [zoomHalfWindowSec, setZoomHalfWindowSec] = useState<15 | 30 | 60>(30);
+  const [zoomWindowCenterSec, setZoomWindowCenterSec] = useState(0);
+  const [fineScrubActive, setFineScrubActive] = useState(false);
+  const fineScrubAnchorRef = useRef<{ clientX: number; baseRatio: number } | null>(null);
+
+  // Ultra-fine 1-second exact frame preview engine (visible hardware-accelerated 360p <video> inside popup)
+  const previewSourceRef = useRef<{ kind: "hls" | "direct"; url: string } | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewHlsRef = useRef<Hls | null>(null);
+  const previewAttachedUrlRef = useRef<string | null>(null);
+  const previewSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPreviewSecRef = useRef<number | null>(null);
+  const lastNudgedPreviewSecRef = useRef<number | null>(null);
 
   const [thumbSaving, setThumbSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Native OS PiP + fallback mini player
+  // Native OS PiP + fallback mini player (starts docked when launched alongside manga!)
   const [nativePipSupported, setNativePipSupported] = useState(false);
   const [isNativePipActive, setIsNativePipActive] = useState(false);
-  const [isMiniMode, setIsMiniMode] = useState(false);
+  const [isMiniMode, setIsMiniMode] = useState(hasActiveManga);
 
-  // Below-player YouTube discovery feed state (progressive render for fast modal mount)
+  // Authentic iOS / iPadOS touch gesture states (swipe-down home/exit, swipe-up fullscreen, horizontal scrub, double-tap +/-10s, long-press 2x)
+  const [dragOffsetY, setDragOffsetY] = useState(0);
+  const [swipeScrubState, setSwipeScrubState] = useState<{
+    targetSec: number;
+    deltaSec: number;
+  } | null>(null);
+  const [seekRipple, setSeekRipple] = useState<{
+    side: "left" | "right";
+    label: string;
+    nonce: number;
+  } | null>(null);
+  const [isLongPress2x, setIsLongPress2x] = useState(false);
+
+  const touchGestureRef = useRef<{
+    startX: number;
+    startY: number;
+    startVideoTime: number;
+    mode: "pending" | "vertical" | "horizontal" | "longpress";
+    lastDy: number;
+    lastTargetSec: number;
+  } | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTapRef = useRef<{ time: number; zone: "left" | "center" | "right" } | null>(null);
+  const lastTouchEndAtRef = useRef<number>(0);
+  const wasPlayingBeforeScrubRef = useRef(false);
+  const wasPausedBeforeLongPressRef = useRef(false);
+  const mouseLongPressActiveRef = useRef(false);
+  const suppressNextVideoClickRef = useRef(false);
+  const lastLiveScrubAtRef = useRef(0);
+  const liveScrubTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // In-player Manga Picker for 1-tap Simultaneous Video + Manga Split Mode
+  const [mangaPickerOpen, setMangaPickerOpen] = useState(false);
+  const [mangaPickerQuery, setMangaPickerQuery] = useState("");
+  const pickableManga = useMemo(() => {
+    const q = mangaPickerQuery.trim().toLowerCase();
+    return allVideos
+      .filter((v) => v.kind === "manga")
+      .filter((v) => (!q ? true : v.title.toLowerCase().includes(q)));
+  }, [allVideos, mangaPickerQuery]);
+
+  // Below-player YouTube discovery feed state (progressive render + fresh random order per video!)
   const [browseQuery, setBrowseQuery] = useState("");
   const [browseGenre, setBrowseGenre] = useState<string>("");
   const [visibleBrowseCount, setVisibleBrowseCount] = useState(12);
+  const [browseShuffleSeed, setBrowseShuffleSeed] = useState<number>(() =>
+    Math.floor(Math.random() * 0x7fffffff)
+  );
 
   const hasPrev = queue.length > 1 && queueIndex > 0;
   const hasNext = queue.length > 1 && queueIndex >= 0 && queueIndex < queue.length - 1;
@@ -269,10 +417,20 @@ export default function VideoPlayerModal({
 
   initialStartTimeSecRef.current = initialStartTimeSec;
 
+  // Auto-minimize video into mini/split mode when user opens a manga so both stay active simultaneously
+  useEffect(() => {
+    if (hasActiveManga) {
+      setIsPseudoFullscreen(false);
+      setIsMiniMode(true);
+    }
+  }, [hasActiveManga]);
+
   // If the user clicks a thumbnail timestamp badge while this same video is already loaded (e.g. mini-mode), jump immediately
   useEffect(() => {
     if (!initialStartNonce) return;
-    setIsMiniMode(false);
+    if (!hasActiveManga) {
+      setIsMiniMode(false);
+    }
     if (
       typeof initialStartTimeSec === "number" &&
       Number.isFinite(initialStartTimeSec) &&
@@ -348,6 +506,7 @@ export default function VideoPlayerModal({
             return;
           }
           timelineRef.current = built.timeline;
+          previewSourceRef.current = { kind: "hls", url: built.playlistUrl };
           setRenditionTimelinesState(built.renditionTimelines);
           urlsToRevoke = built.objectUrlsToRevoke;
           setQualityLabels(built.qualityLabels);
@@ -436,6 +595,7 @@ export default function VideoPlayerModal({
             return;
           }
           urlsToRevoke = [blobUrl];
+          previewSourceRef.current = { kind: "direct", url: blobUrl };
           setQualityLabels(["オリジナル"]);
           videoEl.src = blobUrl;
           videoEl.onloadedmetadata = () => {
@@ -489,21 +649,47 @@ export default function VideoPlayerModal({
     };
   }, [video, accessToken, masterKey, checkNativePipSupport]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load cached poster immediately & encrypted 6x6 storyboard sprite sheet
+  // Load cached poster immediately & encrypted storyboard sprite sheet
   useEffect(() => {
     let active = true;
     setCurrentTimeSec(0);
     setDurationSec(video.duration || 0);
     setHoverSeekRatio(null);
+    setHoverPopupLeftPct(null);
+    setIsDraggingSeekBar(false);
+    setPreviewSyncedSec(null);
+    setZoomWindowCenterSec(0);
+    setSpriteGrid({ cols: 6, rows: 6 });
+    pendingDragRatioRef.current = null;
+    pendingPreviewSecRef.current = null;
+    lastNudgedPreviewSecRef.current = null;
+    previewSourceRef.current = null;
+    previewAttachedUrlRef.current = null;
+    if (previewHlsRef.current) {
+      previewHlsRef.current.destroy();
+      previewHlsRef.current = null;
+    }
+    if (previewVideoRef.current) {
+      previewVideoRef.current.removeAttribute("src");
+      previewVideoRef.current.load();
+    }
     setVisibleBrowseCount(12);
+    setBrowseShuffleSeed(Math.floor(Math.random() * 0x7fffffff));
 
     if (video.thumbnailFileId) {
+      const syncPoster = getSyncCachedThumbnailUrl(
+        video.thumbnailFileId,
+        Boolean(video.encrypted),
+        video.thumbnailModifiedTime
+      );
+      if (syncPoster) setPosterUrl(syncPoster);
       driveFetchCachedThumbnailUrl(
         video.thumbnailFileId,
         accessToken,
         Boolean(video.encrypted),
         masterKey,
-        video.thumbnailModifiedTime
+        video.thumbnailModifiedTime,
+        "high"
       )
         .then((url) => {
           if (active) setPosterUrl(url);
@@ -520,11 +706,16 @@ export default function VideoPlayerModal({
       return;
     }
 
+    const syncSprite = getSyncCachedThumbnailUrl(video.spriteFileId, Boolean(video.encrypted));
+    if (syncSprite) setSpriteUrl(syncSprite);
+
     driveFetchCachedThumbnailUrl(
       video.spriteFileId,
       accessToken,
       Boolean(video.encrypted),
-      masterKey
+      masterKey,
+      undefined,
+      "high"
     )
       .then((url) => {
         if (active) setSpriteUrl(url);
@@ -547,12 +738,300 @@ export default function VideoPlayerModal({
     masterKey,
   ]);
 
+  // Auto-detect sprite sheet grid dimensions (supports existing 6x6 [960x540] and new 10x10 [1600x900] sprites!)
+  useEffect(() => {
+    if (!spriteUrl || typeof Image === "undefined") return;
+    let active = true;
+    const img = new Image();
+    img.onload = () => {
+      if (!active || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+      if (img.naturalWidth % 160 === 0 && img.naturalHeight % 90 === 0) {
+        const cols = Math.round(img.naturalWidth / 160);
+        const rows = Math.round(img.naturalHeight / 90);
+        if (cols >= 4 && rows >= 4 && cols <= 16 && rows <= 16) {
+          setSpriteGrid({ cols, rows });
+        }
+      }
+    };
+    img.src = spriteUrl;
+    return () => {
+      active = false;
+    };
+  }, [spriteUrl]);
+
+  // Keep zoomed seekbar window gently following playback when user is NOT actively dragging
+  useEffect(() => {
+    if (!zoomSeekOpen || isDraggingSeekBar || durationSec <= 0) return;
+    const half = zoomHalfWindowSec;
+    const fullSpan = Math.min(durationSec, half * 2);
+    const safeStart = Math.max(0, Math.min(durationSec - fullSpan, zoomWindowCenterSec - half));
+    const safeEnd = Math.min(durationSec, safeStart + fullSpan);
+    if (currentTimeSec < safeStart || currentTimeSec > safeEnd) {
+      setZoomWindowCenterSec(currentTimeSec);
+    }
+  }, [
+    zoomSeekOpen,
+    isDraggingSeekBar,
+    currentTimeSec,
+    durationSec,
+    zoomHalfWindowSec,
+    zoomWindowCenterSec,
+  ]);
+
+  // Cleanup live 1-second preview decoder & scrub timers on unmount or video switch
+  useEffect(() => {
+    return () => {
+      if (liveScrubTimerRef.current) {
+        clearTimeout(liveScrubTimerRef.current);
+        liveScrubTimerRef.current = null;
+      }
+      wasPlayingBeforeScrubRef.current = false;
+      wasPausedBeforeLongPressRef.current = false;
+      mouseLongPressActiveRef.current = false;
+      if (previewSeekTimerRef.current) {
+        clearTimeout(previewSeekTimerRef.current);
+        previewSeekTimerRef.current = null;
+      }
+      if (previewHlsRef.current) {
+        previewHlsRef.current.destroy();
+        previewHlsRef.current = null;
+      }
+      previewAttachedUrlRef.current = null;
+      if (previewVideoRef.current) {
+        previewVideoRef.current.removeAttribute("src");
+        previewVideoRef.current.load();
+      }
+    };
+  }, [video.id]);
+
+  // Visible Hardware-Accelerated 1-Second Live Frame Preview on Seekbar Hover / Drag (iPadOS Safari & PC)
+  useEffect(() => {
+    const pVidEl = previewVideoRef.current;
+    if (pVidEl) {
+      pVidEl.muted = true;
+      pVidEl.playsInline = true;
+      pVidEl.setAttribute("playsinline", "true");
+      pVidEl.setAttribute("webkit-playsinline", "true");
+    }
+  }, [video.id, isMiniMode]);
+
+  useEffect(() => {
+    if (previewSeekTimerRef.current) {
+      clearTimeout(previewSeekTimerRef.current);
+      previewSeekTimerRef.current = null;
+    }
+    if (hoverSeekRatio === null || durationSec <= 0 || isMiniMode) {
+      pendingPreviewSecRef.current = null;
+      if (previewHlsRef.current) {
+        previewHlsRef.current.stopLoad();
+      }
+      return;
+    }
+
+    const targetSec = Math.min(
+      Math.max(0, Math.round(hoverSeekRatio * durationSec)),
+      Math.max(0, Math.floor(durationSec - 0.5))
+    );
+
+    const srcInfo = previewSourceRef.current;
+    const pVid = previewVideoRef.current;
+    if (!srcInfo || !pVid) return;
+
+    pendingPreviewSecRef.current = targetSec;
+
+    const isTimeBuffered = (vid: HTMLVideoElement, sec: number): boolean => {
+      try {
+        for (let i = 0; i < vid.buffered.length; i += 1) {
+          if (vid.buffered.start(i) <= sec + 0.5 && vid.buffered.end(i) >= sec - 0.5) {
+            return true;
+          }
+        }
+      } catch {
+        // Ignore
+      }
+      return false;
+    };
+
+    const markSyncedIfExact = (vid: HTMLVideoElement) => {
+      const expected = pendingPreviewSecRef.current;
+      if (expected === null) return;
+      if (vid.readyState < 2 || vid.videoWidth <= 0 || vid.seeking) return;
+      if (!isTimeBuffered(vid, expected)) return;
+      if (Math.abs(vid.currentTime - expected) > 1.0) return;
+      setPreviewSyncedSec(vid.currentTime);
+      if (previewHlsRef.current) {
+        previewHlsRef.current.stopLoad();
+      }
+    };
+
+    // Instant 0ms hit if the visible preview <video> is already buffered & positioned at targetSec
+    if (
+      previewAttachedUrlRef.current === srcInfo.url &&
+      pVid.readyState >= 2 &&
+      !pVid.seeking &&
+      isTimeBuffered(pVid, targetSec) &&
+      Math.abs(pVid.currentTime - targetSec) <= 0.4
+    ) {
+      setPreviewSyncedSec(pVid.currentTime);
+      return;
+    }
+
+    // Also if already buffered at another second inside the same 8s/15s segment, seek IMMEDIATELY (0ms debounce!)
+    if (
+      previewAttachedUrlRef.current === srcInfo.url &&
+      pVid.readyState >= 1 &&
+      isTimeBuffered(pVid, targetSec)
+    ) {
+      pVid.currentTime = targetSec;
+      return;
+    }
+
+    previewSeekTimerRef.current = setTimeout(() => {
+      const wantedSec = pendingPreviewSecRef.current;
+      const vid = previewVideoRef.current;
+      if (wantedSec === null || !vid) return;
+
+      // Lazily attach muted 360p HLS or direct stream to the VISIBLE <video> inside the popup
+      if (previewAttachedUrlRef.current !== srcInfo.url) {
+        if (previewHlsRef.current) {
+          previewHlsRef.current.destroy();
+          previewHlsRef.current = null;
+        }
+        previewAttachedUrlRef.current = srcInfo.url;
+        setPreviewSyncedSec(null);
+        vid.muted = true;
+        vid.playsInline = true;
+        vid.setAttribute("playsinline", "true");
+        vid.setAttribute("webkit-playsinline", "true");
+
+        const onReadyFrame = () => {
+          const curVid = previewVideoRef.current;
+          if (curVid) markSyncedIfExact(curVid);
+        };
+        vid.onseeked = onReadyFrame;
+        vid.onloadeddata = onReadyFrame;
+        vid.oncanplay = onReadyFrame;
+        vid.onloadedmetadata = () => {
+          const s = pendingPreviewSecRef.current;
+          const curVid = previewVideoRef.current;
+          if (s !== null && curVid && Math.abs(curVid.currentTime - s) > 0.3) {
+            curVid.currentTime = s;
+          }
+        };
+
+        if (srcInfo.kind === "hls" && Hls.isSupported()) {
+          const pHls = new Hls({
+            enableWorker: true,
+            progressive: false,
+            enableSoftwareAES: false,
+            lowLatencyMode: false,
+            autoStartLoad: true,
+            startLevel: 0,
+            startPosition: wantedSec,
+            maxBufferLength: 18,
+            maxMaxBufferLength: 32,
+            backBufferLength: 30,
+            fLoader: createCachedDriveFragmentLoader(accessToken),
+            xhrSetup: (xhr, url) => {
+              if (url.startsWith("https://www.googleapis.com/")) {
+                xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+              }
+            },
+          });
+          pHls.autoLevelCapping = 0;
+          pHls.on(Hls.Events.MEDIA_ATTACHED, () => {
+            pHls.loadSource(srcInfo.url);
+          });
+          pHls.on(Hls.Events.MANIFEST_PARSED, () => {
+            pHls.currentLevel = 0;
+            pHls.autoLevelCapping = 0;
+            const s = pendingPreviewSecRef.current;
+            const curVid = previewVideoRef.current;
+            if (s !== null && curVid) {
+              if (curVid.readyState >= 1) {
+                curVid.currentTime = s;
+              }
+              pHls.startLoad(s);
+            }
+          });
+          pHls.on(Hls.Events.FRAG_BUFFERED, () => {
+            const s = pendingPreviewSecRef.current;
+            const curVid = previewVideoRef.current;
+            if (s === null || !curVid) return;
+            if (isTimeBuffered(curVid, s)) {
+              if (Math.abs(curVid.currentTime - s) > 0.25) {
+                curVid.currentTime = s;
+              } else if (curVid.readyState >= 2 && !curVid.seeking) {
+                markSyncedIfExact(curVid);
+              } else if (lastNudgedPreviewSecRef.current !== s) {
+                lastNudgedPreviewSecRef.current = s;
+                curVid.currentTime = Math.min(durationSec, s + 0.01);
+              }
+            }
+          });
+          pHls.on(Hls.Events.ERROR, (_ev, data) => {
+            if (!data.fatal) return;
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              const s = pendingPreviewSecRef.current;
+              if (s !== null) pHls.startLoad(s);
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              pHls.recoverMediaError();
+            }
+          });
+          pHls.attachMedia(vid);
+          previewHlsRef.current = pHls;
+          return;
+        } else if (srcInfo.kind === "direct") {
+          vid.src = srcInfo.url;
+          return;
+        }
+      }
+
+      // Already attached: set vid.currentTime FIRST, then call startLoad(wantedSec) so hls.js seeks the right segment!
+      if (previewHlsRef.current) {
+        previewHlsRef.current.currentLevel = 0;
+        if (vid.readyState >= 1 && Math.abs(vid.currentTime - wantedSec) > 0.2) {
+          vid.currentTime = wantedSec;
+        }
+        if (isTimeBuffered(vid, wantedSec)) {
+          if (Math.abs(vid.currentTime - wantedSec) <= 0.3 && vid.readyState >= 2 && !vid.seeking) {
+            markSyncedIfExact(vid);
+          }
+        } else {
+          previewHlsRef.current.startLoad(wantedSec);
+        }
+      } else if (vid.readyState >= 1) {
+        if (Math.abs(vid.currentTime - wantedSec) <= 0.3 && vid.readyState >= 2 && !vid.seeking) {
+          markSyncedIfExact(vid);
+        } else {
+          vid.currentTime = wantedSec;
+        }
+      }
+    }, 35);
+
+    return () => {
+      if (previewSeekTimerRef.current) {
+        clearTimeout(previewSeekTimerRef.current);
+      }
+    };
+  }, [hoverSeekRatio, durationSec, isMiniMode, loading, accessToken]);
+
   // Prefetch next queue video's playlist AND first segment for near-0ms transitions
   useEffect(() => {
     if (!hasNext) return;
     const nextVideo = queue[queueIndex + 1];
     if (!nextVideo?.manifest) return;
     prefetchHlsPlaylist(nextVideo.manifest, accessToken, masterKey);
+    if (nextVideo.spriteFileId) {
+      driveFetchCachedThumbnailUrl(
+        nextVideo.spriteFileId,
+        accessToken,
+        Boolean(nextVideo.encrypted),
+        masterKey,
+        undefined,
+        "low"
+      ).catch(() => undefined);
+    }
     const timer = setTimeout(() => {
       const seg0Url = getSegmentUrlForTime(nextVideo.manifest, nextVideo.duration, 0);
       if (seg0Url) {
@@ -817,7 +1296,8 @@ export default function VideoPlayerModal({
       if (
         videoRef.current &&
         !videoRef.current.paused &&
-        !isDraggingSeekRef.current
+        !isDraggingSeekRef.current &&
+        !isDraggingZoomSeekRef.current
       ) {
         setControlsVisible(false);
         setSpeedMenuOpen(false);
@@ -825,13 +1305,30 @@ export default function VideoPlayerModal({
     }, 2600);
   }, []);
 
+  // Enforce inline playback on iPadOS/iOS Safari so Apple's native AVPlayer never hijacks our custom UI
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.controls = false;
+    el.playsInline = true;
+    el.setAttribute("playsinline", "true");
+    el.setAttribute("webkit-playsinline", "true");
+  }, [video.id]);
+
   useEffect(() => {
     const onFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      const doc = document as WebKitDocument;
+      const fsActive = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(fsActive);
+      if (fsActive) {
+        setIsPseudoFullscreen(false);
+      }
     };
     document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange as EventListener);
     return () => {
       document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange as EventListener);
       if (hideControlsTimerRef.current) {
         clearTimeout(hideControlsTimerRef.current);
       }
@@ -839,30 +1336,384 @@ export default function VideoPlayerModal({
   }, []);
 
   const handleToggleFullscreen = useCallback(async () => {
-    const container = playerContainerRef.current;
-    const videoEl = videoRef.current as WebKitVideoElement | null;
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-        return;
-      }
-      if (container && typeof container.requestFullscreen === "function") {
-        await container.requestFullscreen();
-        return;
-      }
-      if (videoEl && typeof videoEl.webkitEnterFullscreen === "function") {
-        videoEl.webkitEnterFullscreen();
-      }
-    } catch {
-      if (videoEl && typeof videoEl.webkitEnterFullscreen === "function") {
-        try {
-          videoEl.webkitEnterFullscreen();
-        } catch {
-          // Ignore
+    const doc = document as WebKitDocument;
+    const container = playerContainerRef.current as WebKitHTMLElement | null;
+
+    if (isPseudoFullscreen) {
+      setIsPseudoFullscreen(false);
+      return;
+    }
+
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      try {
+        if (doc.fullscreenElement && typeof doc.exitFullscreen === "function") {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === "function") {
+          await doc.webkitExitFullscreen();
         }
+      } catch {
+        setIsFullscreen(false);
+      }
+      return;
+    }
+
+    // Always fullscreen our custom container (never call videoEl.webkitEnterFullscreen which launches iPad's native AVPlayer!)
+    if (container) {
+      try {
+        if (typeof container.requestFullscreen === "function") {
+          await container.requestFullscreen();
+          return;
+        }
+        if (typeof container.webkitRequestFullscreen === "function") {
+          await container.webkitRequestFullscreen();
+          return;
+        }
+      } catch {
+        // Fall back to in-app fullscreen below
       }
     }
+
+    setIsPseudoFullscreen(true);
+  }, [isPseudoFullscreen]);
+
+  // Go directly to Home (Mini-Player) even from Fullscreen on iPad/iPhone!
+  const handleGoHomeFromPlayer = useCallback(async () => {
+    const doc = document as WebKitDocument;
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      try {
+        if (doc.fullscreenElement && typeof doc.exitFullscreen === "function") {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === "function") {
+          await doc.webkitExitFullscreen();
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    setIsFullscreen(false);
+    setIsPseudoFullscreen(false);
+    setIsMiniMode(true);
   }, []);
+
+  const triggerSeekRipple = useCallback((side: "left" | "right", deltaSec: number) => {
+    const nonce = Date.now();
+    setSeekRipple({
+      side,
+      label: deltaSec > 0 ? `+${deltaSec}秒` : `${deltaSec}秒`,
+      nonce,
+    });
+    setTimeout(() => {
+      setSeekRipple((cur) => (cur && cur.nonce === nonce ? null : cur));
+    }, 620);
+  }, []);
+
+  const startLongPress2x = useCallback(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    wasPausedBeforeLongPressRef.current = el.paused;
+    el.playbackRate = 2;
+    if (el.paused) {
+      el.play().catch(() => undefined);
+    }
+    setIsLongPress2x(true);
+  }, []);
+
+  const stopLongPress2x = useCallback(() => {
+    setIsLongPress2x(false);
+    const el = videoRef.current;
+    if (!el) return;
+    el.playbackRate = playbackRate;
+    if (wasPausedBeforeLongPressRef.current) {
+      wasPausedBeforeLongPressRef.current = false;
+      el.pause();
+    }
+  }, [playbackRate]);
+
+  const scrubMainVideoLive = useCallback(
+    (rawTargetSec: number, immediate = false) => {
+      const el = videoRef.current;
+      if (!el || durationSec <= 0) return;
+      const targetTime = Math.min(durationSec, Math.max(0, rawTargetSec));
+      const applyNow = () => {
+        const curEl = videoRef.current;
+        if (!curEl) return;
+        const segUrl = resolveExactSegmentUrl(targetTime);
+        abortLowPriorityPrefetches(segUrl ?? undefined);
+        if (hlsRef.current && selectedLevel === -1 && qualityLabels.length > 1) {
+          hlsRef.current.nextLoadLevel = 0;
+        }
+        lastLiveScrubAtRef.current = performance.now();
+        curEl.currentTime = targetTime;
+      };
+
+      const elapsed = performance.now() - lastLiveScrubAtRef.current;
+      if (immediate || (!el.seeking && elapsed >= 70)) {
+        if (liveScrubTimerRef.current) {
+          clearTimeout(liveScrubTimerRef.current);
+          liveScrubTimerRef.current = null;
+        }
+        applyNow();
+      } else {
+        if (liveScrubTimerRef.current) {
+          clearTimeout(liveScrubTimerRef.current);
+        }
+        liveScrubTimerRef.current = setTimeout(() => {
+          liveScrubTimerRef.current = null;
+          applyNow();
+        }, 85);
+      }
+    },
+    [durationSec, resolveExactSegmentUrl, selectedLevel, qualityLabels.length]
+  );
+
+  const beginLiveScrub = useCallback(
+    (initialSec: number) => {
+      if (liveScrubTimerRef.current) {
+        clearTimeout(liveScrubTimerRef.current);
+        liveScrubTimerRef.current = null;
+      }
+      const el = videoRef.current;
+      if (el) {
+        wasPlayingBeforeScrubRef.current = !el.paused;
+        if (!el.paused) {
+          el.pause();
+        }
+      }
+      scrubMainVideoLive(initialSec, true);
+    },
+    [scrubMainVideoLive]
+  );
+
+  const finishLiveScrub = useCallback(
+    (rawFinalSec: number) => {
+      if (liveScrubTimerRef.current) {
+        clearTimeout(liveScrubTimerRef.current);
+        liveScrubTimerRef.current = null;
+      }
+      const el = videoRef.current;
+      if (el && durationSec > 0) {
+        const targetTime = Math.min(durationSec, Math.max(0, rawFinalSec));
+        const segUrl = resolveExactSegmentUrl(targetTime);
+        abortLowPriorityPrefetches(segUrl ?? undefined);
+        if (hlsRef.current && selectedLevel === -1 && qualityLabels.length > 1) {
+          hlsRef.current.nextLoadLevel = 0;
+        }
+        el.currentTime = targetTime;
+        setCurrentTimeSec(targetTime);
+      }
+      if (wasPlayingBeforeScrubRef.current) {
+        wasPlayingBeforeScrubRef.current = false;
+        videoRef.current?.play().catch(() => undefined);
+      }
+    },
+    [durationSec, resolveExactSegmentUrl, selectedLevel, qualityLabels.length]
+  );
+
+  const cancelLiveScrub = useCallback(() => {
+    if (liveScrubTimerRef.current) {
+      clearTimeout(liveScrubTimerRef.current);
+      liveScrubTimerRef.current = null;
+    }
+    if (wasPlayingBeforeScrubRef.current) {
+      wasPlayingBeforeScrubRef.current = false;
+      videoRef.current?.play().catch(() => undefined);
+    }
+  }, []);
+
+  const handleVideoMouseDown = (e: React.MouseEvent<HTMLVideoElement>) => {
+    if (isMiniMode || e.button !== 0) return;
+    if (performance.now() - lastTouchEndAtRef.current < 450) return;
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = setTimeout(() => {
+      mouseLongPressActiveRef.current = true;
+      suppressNextVideoClickRef.current = true;
+      startLongPress2x();
+    }, 360);
+  };
+
+  const handleVideoMouseEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (mouseLongPressActiveRef.current) {
+      mouseLongPressActiveRef.current = false;
+      stopLongPress2x();
+    }
+  };
+
+  const handleVideoTouchStart = (e: React.TouchEvent<HTMLVideoElement>) => {
+    if (isMiniMode || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const el = videoRef.current;
+    const startVideoTime = el && Number.isFinite(el.currentTime) ? el.currentTime : 0;
+
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    touchGestureRef.current = {
+      startX: t.clientX,
+      startY: t.clientY,
+      startVideoTime,
+      mode: "pending",
+      lastDy: 0,
+      lastTargetSec: startVideoTime,
+    };
+
+    // YouTube iOS signature gesture: hold 360ms for 2.0x live playback (works even when paused!)
+    longPressTimerRef.current = setTimeout(() => {
+      const g = touchGestureRef.current;
+      if (!g || g.mode !== "pending") return;
+      g.mode = "longpress";
+      startLongPress2x();
+    }, 360);
+  };
+
+  const handleVideoTouchMove = (e: React.TouchEvent<HTMLVideoElement>) => {
+    const g = touchGestureRef.current;
+    if (!g || isMiniMode || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - g.startX;
+    const dy = t.clientY - g.startY;
+
+    if (g.mode === "longpress") return;
+
+    if (g.mode === "pending") {
+      if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return;
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      if (Math.abs(dy) > Math.abs(dx) * 1.15) {
+        g.mode = "vertical";
+      } else if (durationSec > 0) {
+        g.mode = "horizontal";
+        beginLiveScrub(g.startVideoTime);
+      } else {
+        return;
+      }
+    }
+
+    if (g.mode === "vertical") {
+      g.lastDy = dy;
+      const clamped = Math.max(-90, Math.min(220, dy));
+      setDragOffsetY(clamped);
+    } else if (g.mode === "horizontal" && durationSec > 0) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const spanSec = Math.min(180, Math.max(45, durationSec * 0.35));
+      const deltaSec = Math.round((dx / Math.max(240, rect.width)) * spanSec);
+      const targetSec = Math.min(durationSec, Math.max(0, g.startVideoTime + deltaSec));
+      g.lastTargetSec = targetSec;
+      setSwipeScrubState({ targetSec, deltaSec });
+      const nextRatio = Math.min(0.999, Math.max(0, targetSec / durationSec));
+      setHoverSeekRatio(nextRatio);
+      setHoverPopupLeftPct(nextRatio * 100);
+      scrubMainVideoLive(targetSec);
+    }
+  };
+
+  const handleVideoTouchEnd = (e: React.TouchEvent<HTMLVideoElement>) => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    const g = touchGestureRef.current;
+    touchGestureRef.current = null;
+    if (!g || isMiniMode) return;
+
+    lastTouchEndAtRef.current = performance.now();
+
+    if (g.mode === "longpress") {
+      stopLongPress2x();
+      return;
+    }
+
+    if (g.mode === "vertical") {
+      const dy = g.lastDy;
+      setDragOffsetY(0);
+      if (anyFullscreen) {
+        if (dy > 145) {
+          handleGoHomeFromPlayer();
+        } else if (dy > 65) {
+          handleToggleFullscreen();
+        }
+      } else {
+        if (dy > 75) {
+          handleGoHomeFromPlayer();
+        } else if (dy < -65) {
+          handleToggleFullscreen();
+        }
+      }
+      return;
+    }
+
+    if (g.mode === "horizontal") {
+      const targetSec = g.lastTargetSec;
+      setSwipeScrubState(null);
+      setHoverSeekRatio(null);
+      setHoverPopupLeftPct(null);
+      finishLiveScrub(targetSec);
+      return;
+    }
+
+    // Clean touch tap: single tap toggles HUD (iOS YouTube feel), double-tap left/right skips +/-10s, center double-tap toggles fullscreen!
+    const touch = e.changedTouches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = touch && rect.width > 0 ? (touch.clientX - rect.left) / rect.width : 0.5;
+    const zone: "left" | "center" | "right" =
+      ratio < 0.35 ? "left" : ratio > 0.65 ? "right" : "center";
+
+    const now = performance.now();
+    const prev = lastTapRef.current;
+    if (prev && now - prev.time < 290 && prev.zone === zone) {
+      lastTapRef.current = null;
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      const el = videoRef.current;
+      if (zone === "left" && el) {
+        const nextT = Math.max(0, el.currentTime - 10);
+        el.currentTime = nextT;
+        setCurrentTimeSec(nextT);
+        triggerSeekRipple("left", -10);
+      } else if (zone === "right" && el) {
+        const nextT = Math.min(el.duration || durationSec || Infinity, el.currentTime + 10);
+        el.currentTime = nextT;
+        setCurrentTimeSec(nextT);
+        triggerSeekRipple("right", 10);
+      } else {
+        handleToggleFullscreen();
+      }
+      return;
+    }
+
+    lastTapRef.current = { time: now, zone };
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null;
+      setControlsVisible((prevVisible) => {
+        const next = !prevVisible;
+        if (next) bumpControlsVisibility();
+        return next;
+      });
+    }, 240);
+  };
+
+  const handleVideoTouchCancel = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (touchGestureRef.current?.mode === "longpress") {
+      stopLongPress2x();
+    } else if (touchGestureRef.current?.mode === "horizontal") {
+      cancelLiveScrub();
+    }
+    touchGestureRef.current = null;
+    setDragOffsetY(0);
+    setSwipeScrubState(null);
+    setHoverSeekRatio(null);
+    setHoverPopupLeftPct(null);
+  };
 
   const handleToggleMute = useCallback(() => {
     const el = videoRef.current;
@@ -894,9 +1745,16 @@ export default function VideoPlayerModal({
         return;
       }
       const videoEl = videoRef.current;
-      if (event.key === "Escape" && !document.fullscreenElement) {
-        setIsMiniMode(true);
-        return;
+      if (event.key === "Escape") {
+        if (isPseudoFullscreen) {
+          setIsPseudoFullscreen(false);
+          return;
+        }
+        const doc = document as WebKitDocument;
+        if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
+          setIsMiniMode(true);
+          return;
+        }
       }
       if (!videoEl) return;
       if (event.key === "ArrowRight" || event.key.toLowerCase() === "l") {
@@ -937,6 +1795,7 @@ export default function VideoPlayerModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     isMiniMode,
+    isPseudoFullscreen,
     onClose,
     bumpControlsVisibility,
     handleToggleFullscreen,
@@ -947,7 +1806,13 @@ export default function VideoPlayerModal({
   const handleTimeUpdate = () => {
     const el = videoRef.current;
     if (!el || !Number.isFinite(el.currentTime)) return;
-    setCurrentTimeSec(el.currentTime);
+    const isActivelyScrubbing =
+      isDraggingSeekRef.current ||
+      isDraggingZoomSeekRef.current ||
+      touchGestureRef.current?.mode === "horizontal";
+    if (!isActivelyScrubbing) {
+      setCurrentTimeSec(el.currentTime);
+    }
     const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : video.duration;
     if (dur > 0) {
       setDurationSec(dur);
@@ -956,6 +1821,7 @@ export default function VideoPlayerModal({
         setBufferedPercent(Math.min(100, Math.max(0, (bufEnd / dur) * 100)));
       }
     }
+    if (isActivelyScrubbing) return;
     const now = Date.now();
     if (now - lastProgressSavedAtRef.current < 2000) return;
     lastProgressSavedAtRef.current = now;
@@ -971,29 +1837,41 @@ export default function VideoPlayerModal({
     return Math.min(0.999, Math.max(0, (clientX - rect.left) / rect.width));
   };
 
-  const handleSeekToClientX = (clientX: number) => {
-    const el = videoRef.current;
-    if (!el || durationSec <= 0) return;
-    const ratio = getSeekRatioFromClientX(clientX);
-    const targetTime = ratio * durationSec;
-    const targetSegUrl = resolveExactSegmentUrl(targetTime);
-    abortLowPriorityPrefetches(targetSegUrl ?? undefined);
-    // In Auto ABR mode with multiple qualities, grab lightweight 360p chunk first on seek for instant playback
-    if (hlsRef.current && selectedLevel === -1 && qualityLabels.length > 1) {
-      hlsRef.current.nextLoadLevel = 0;
-    }
-    el.currentTime = targetTime;
-    setCurrentTimeSec(targetTime);
-  };
+  const seekToTime = useCallback(
+    (rawTargetSec: number) => {
+      const el = videoRef.current;
+      if (!el || durationSec <= 0) return;
+      const targetTime = Math.min(durationSec, Math.max(0, rawTargetSec));
+      const targetSegUrl = resolveExactSegmentUrl(targetTime);
+      abortLowPriorityPrefetches(targetSegUrl ?? undefined);
+      if (hlsRef.current && selectedLevel === -1 && qualityLabels.length > 1) {
+        hlsRef.current.nextLoadLevel = 0;
+      }
+      el.currentTime = targetTime;
+      setCurrentTimeSec(targetTime);
+    },
+    [durationSec, resolveExactSegmentUrl, selectedLevel, qualityLabels.length]
+  );
 
+  const spriteTotalFrames = spriteGrid.cols * spriteGrid.rows;
   const seekHoverFrameIdx =
     hoverSeekRatio !== null
-      ? Math.min(35, Math.max(0, Math.floor(hoverSeekRatio * 36)))
+      ? Math.min(spriteTotalFrames - 1, Math.max(0, Math.round(hoverSeekRatio * spriteTotalFrames)))
       : 0;
-  const seekHoverCol = seekHoverFrameIdx % 6;
-  const seekHoverRow = Math.floor(seekHoverFrameIdx / 6);
+  const seekHoverCol = seekHoverFrameIdx % spriteGrid.cols;
+  const seekHoverRow = Math.floor(seekHoverFrameIdx / spriteGrid.cols);
+  const hoverTargetSec =
+    hoverSeekRatio !== null && durationSec > 0 ? Math.round(hoverSeekRatio * durationSec) : null;
+  const isLivePreviewSynced =
+    hoverTargetSec !== null &&
+    previewSyncedSec !== null &&
+    Math.abs(previewSyncedSec - hoverTargetSec) <= 1.0;
+  const displayTimeSec =
+    isDraggingSeekBar && hoverSeekRatio !== null && durationSec > 0
+      ? hoverSeekRatio * durationSec
+      : currentTimeSec;
   const playedPercent =
-    durationSec > 0 ? Math.min(100, Math.max(0, (currentTimeSec / durationSec) * 100)) : 0;
+    durationSec > 0 ? Math.min(100, Math.max(0, (displayTimeSec / durationSec) * 100)) : 0;
 
   const effectiveThumbTimeSec =
     typeof thumbnailTimeSec === "number" && Number.isFinite(thumbnailTimeSec)
@@ -1069,14 +1947,15 @@ export default function VideoPlayerModal({
 
       const capturedSec = Math.max(0, Math.round(el.currentTime * 10) / 10);
       const jpegBytes = new Uint8Array(await blob.arrayBuffer());
-      await updateThumbnailInDrive(
+      const { url: freshUrl, updatedAt } = await updateThumbnailInDrive(
         video.thumbnailFileId,
         jpegBytes,
         accessToken,
         Boolean(video.encrypted),
         masterKey
       );
-      onThumbnailUpdated(video.id, capturedSec);
+      setPosterUrl(freshUrl);
+      onThumbnailUpdated(video.id, capturedSec, updatedAt);
       showToast(`${formatDuration(capturedSec)} のシーンをサムネイルに保存しました！`);
     } catch (err) {
       if (err instanceof Error && err.message === "AUTH_EXPIRED") {
@@ -1106,6 +1985,7 @@ export default function VideoPlayerModal({
     const counts = new Map<string, number>();
     for (const v of allVideos) {
       for (const g of videoGenresMap[v.id] ?? []) {
+        if (CATEGORY_TAG_SET.has(g)) continue;
         counts.set(g, (counts.get(g) ?? 0) + 1);
       }
     }
@@ -1129,15 +2009,22 @@ export default function VideoPlayerModal({
         );
       });
     }
-    return list;
-  }, [allVideos, video.id, browseGenre, browseQuery, videoGenresMap]);
+    return [...list].sort(
+      (a, b) =>
+        seededOrderHash(a.id, browseShuffleSeed) - seededOrderHash(b.id, browseShuffleSeed)
+    );
+  }, [allVideos, video.id, browseGenre, browseQuery, videoGenresMap, browseShuffleSeed]);
+
+  const isSplitDocked = isMiniMode && hasActiveManga && splitWithManga;
 
   return (
     <div
       className={
-        isMiniMode
-          ? "fixed bottom-16 right-3 z-50 w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 sm:w-[340px] md:bottom-5 md:right-5"
-          : "fixed inset-0 z-50 flex flex-col bg-[#0b0b0e]"
+        isSplitDocked
+          ? "fixed inset-x-0 top-0 z-[55] flex h-[34dvh] flex-col overflow-hidden border-b border-white/15 bg-[#060609] shadow-2xl shadow-black/90 lg:inset-y-0 lg:left-0 lg:right-auto lg:h-[100dvh] lg:w-[42vw] lg:justify-center lg:border-b-0 lg:border-r lg:border-white/15"
+          : isMiniMode
+            ? "fixed bottom-16 right-3 z-[55] w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 sm:w-[340px] md:bottom-5 md:right-5"
+            : "fixed inset-0 z-[55] flex flex-col bg-[#0b0b0e]"
       }
       role="dialog"
       aria-modal={!isMiniMode}
@@ -1145,7 +2032,7 @@ export default function VideoPlayerModal({
     >
       {/* YouTube Watch-Page Top Navigation Bar */}
       {!isMiniMode && (
-        <header className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-3 border-b border-zinc-800/80 bg-[#0b0b0e]/95 px-3 py-2.5 backdrop-blur-xl sm:px-5">
+        <header className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/80 bg-[#0b0b0e]/95 px-3 py-2.5 backdrop-blur-xl sm:px-5">
           <div className="flex items-center gap-2 sm:gap-3">
             <button
               type="button"
@@ -1154,11 +2041,46 @@ export default function VideoPlayerModal({
               title="再生を続けたままホームへ戻る"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>ホームへ戻る</span>
+              <span className="hidden sm:inline">ホームへ戻る</span>
+              <span className="sm:hidden">戻る</span>
             </button>
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (hasActiveManga) {
+                  onEnableSplitWithManga?.();
+                  setIsMiniMode(true);
+                } else if (linkedManga.length === 1) {
+                  onEnableSplitWithManga?.();
+                  setIsMiniMode(true);
+                  onSelectVideo(linkedManga[0]);
+                } else {
+                  setMangaPickerOpen(true);
+                }
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                linkedManga.length > 0 && !hasActiveManga
+                  ? "border-amber-400/70 bg-gradient-to-r from-amber-500/25 via-rose-500/20 to-sky-500/20 text-amber-100 shadow-sm shadow-amber-500/20 hover:brightness-125"
+                  : "border-amber-500/50 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+              }`}
+              title="動画を見ながら同時に漫画を開く"
+            >
+              {linkedManga.length > 0 && !hasActiveManga ? (
+                <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+              ) : (
+                <BookOpen className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {hasActiveManga
+                  ? "漫画と分割に戻る"
+                  : linkedManga.length > 0
+                    ? "原作漫画あり・同時"
+                    : "漫画と同時"}
+              </span>
+            </button>
             <span className="hidden text-xs text-zinc-400 sm:inline">
               キュー {queueIndex + 1} / {queue.length}
             </span>
@@ -1178,57 +2100,154 @@ export default function VideoPlayerModal({
       {/* Main Scrollable YouTube Watch Layout */}
       <div
         className={
-          isMiniMode
-            ? "flex flex-col"
-            : "flex-1 overflow-y-auto"
+          isSplitDocked
+            ? "flex min-h-0 flex-1 flex-col lg:flex-initial"
+            : isMiniMode
+              ? "flex flex-col"
+              : "flex-1 overflow-y-auto"
         }
       >
         <div
           className={
-            isMiniMode
-              ? "flex flex-col"
-              : "mx-auto flex max-w-[1600px] flex-col gap-6 px-3 py-4 sm:px-5 lg:flex-row lg:items-start"
+            isSplitDocked
+              ? "flex min-h-0 flex-1 flex-col lg:flex-initial"
+              : isMiniMode
+                ? "flex flex-col"
+                : "mx-auto flex max-w-[1600px] flex-col gap-6 px-3 py-4 sm:px-5 lg:flex-row lg:items-start"
           }
         >
           {/* LEFT MAIN COLUMN: Video + Meta/Controls + Below-Video Search & Browse Feed */}
-          <div className={isMiniMode ? "w-full" : "min-w-0 flex-1"}>
+          <div
+            className={
+              isSplitDocked
+                ? "flex min-h-0 w-full flex-1 flex-col lg:flex-initial"
+                : isMiniMode
+                  ? "w-full"
+                  : "min-w-0 flex-1"
+            }
+          >
             {/* Custom Unified YouTube-style Video Player Container */}
             <div
               ref={playerContainerRef}
               onMouseMove={bumpControlsVisibility}
               onMouseLeave={() => {
-                if (!isPaused && !isDraggingSeekRef.current) {
+                if (
+                  !isPaused &&
+                  !isDraggingSeekRef.current &&
+                  !isDraggingZoomSeekRef.current &&
+                  !zoomSeekOpen
+                ) {
                   setControlsVisible(false);
                   setSpeedMenuOpen(false);
+                  setQualityMenuOpen(false);
                 }
               }}
+              onContextMenu={(e) => e.preventDefault()}
               className={
-                isMiniMode
-                  ? "relative aspect-video w-full bg-black"
-                  : isFullscreen
-                    ? "relative flex h-screen w-screen items-center justify-center bg-black"
-                    : "relative aspect-video max-h-[72vh] w-full overflow-hidden rounded-2xl bg-black ring-1 ring-zinc-800/80"
+                isSplitDocked
+                  ? "ios-no-callout relative min-h-0 w-full flex-1 bg-black lg:aspect-video lg:flex-initial"
+                  : isMiniMode
+                    ? "ios-no-callout relative aspect-video w-full bg-black"
+                    : isPseudoFullscreen
+                      ? "ios-no-callout fixed inset-0 z-[90] flex h-[100dvh] w-screen touch-none items-center justify-center bg-black"
+                      : isFullscreen
+                        ? "ios-no-callout relative flex h-screen w-screen touch-none items-center justify-center bg-black"
+                        : "ios-no-callout relative aspect-video max-h-[72vh] w-full touch-none overflow-hidden rounded-2xl bg-black ring-1 ring-zinc-800/80"
+              }
+              style={
+                !isMiniMode && dragOffsetY !== 0
+                  ? {
+                      transform: `translateY(${dragOffsetY}px) scale(${1 - Math.min(0.1, Math.max(0, dragOffsetY) / 1600)})`,
+                      transition: "none",
+                    }
+                  : !isMiniMode
+                    ? { transition: "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)" }
+                    : undefined
               }
             >
               <video
                 ref={videoRef}
                 controls={false}
+                controlsList="nodownload nofullscreen"
                 playsInline
                 preload="auto"
                 poster={posterUrl ?? undefined}
+                onMouseDown={handleVideoMouseDown}
+                onMouseUp={handleVideoMouseEnd}
+                onMouseLeave={handleVideoMouseEnd}
+                onTouchStart={handleVideoTouchStart}
+                onTouchMove={handleVideoTouchMove}
+                onTouchEnd={handleVideoTouchEnd}
+                onTouchCancel={handleVideoTouchCancel}
                 onClick={() => {
+                  // Ignore synthetic mouse click right after touch gesture or mouse long-press
+                  if (performance.now() - lastTouchEndAtRef.current < 450) return;
+                  if (suppressNextVideoClickRef.current) {
+                    suppressNextVideoClickRef.current = false;
+                    return;
+                  }
+                  handleTogglePlayPause();
                   if (!isMiniMode) {
-                    handleTogglePlayPause();
                     bumpControlsVisibility();
                   }
                 }}
                 onDoubleClick={() => {
+                  if (performance.now() - lastTouchEndAtRef.current < 450) return;
                   if (!isMiniMode) handleToggleFullscreen();
                 }}
                 onTimeUpdate={handleTimeUpdate}
                 onEnded={handleEnded}
-                className="h-full w-full cursor-pointer object-contain"
+                className="ios-no-callout h-full w-full cursor-pointer select-none object-contain"
               />
+
+              {/* iOS Swipe-Down / Swipe-Up Pull Hint Pill */}
+              {!isMiniMode && Math.abs(dragOffsetY) > 28 && (
+                <div className="pointer-events-none absolute left-1/2 top-5 z-30 -translate-x-1/2 rounded-full border border-white/20 bg-black/75 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xl backdrop-blur-xl">
+                  {anyFullscreen
+                    ? dragOffsetY > 145
+                      ? "↓ 離すとホームへ戻る"
+                      : "↓ 離すと全画面終了（さらに引くとホームへ）"
+                    : dragOffsetY > 28
+                      ? "↓ 離すとミニ窓でホームへ"
+                      : "↑ 離すとフルスクリーン"}
+                </div>
+              )}
+
+              {/* Long-press 2.0x Speed Pill (YouTube iOS gesture + PC Mouse Hold!) */}
+              {!isMiniMode && isLongPress2x && (
+                <div className="pointer-events-none absolute left-1/2 top-5 z-30 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-amber-400/40 bg-black/80 px-3.5 py-1.5 text-xs font-bold text-amber-200 shadow-2xl backdrop-blur-xl">
+                  <Zap className="h-3.5 w-3.5 fill-current text-amber-400" />
+                  <span>2.0× 再生中（離すと戻る）</span>
+                </div>
+              )}
+
+              {/* Horizontal Swipe Scrub Floating Pill */}
+              {!isMiniMode && swipeScrubState && (
+                <div className="pointer-events-none absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1.5 rounded-2xl border border-white/20 bg-black/80 px-4 py-2.5 shadow-2xl backdrop-blur-2xl">
+                  <div className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                    <span>{formatDuration(swipeScrubState.targetSec)}</span>
+                    <span className="text-xs text-rose-400">
+                      ({swipeScrubState.deltaSec >= 0 ? `+${swipeScrubState.deltaSec}` : swipeScrubState.deltaSec}秒)
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Double-Tap +/-10s Ripple Indicator */}
+              {!isMiniMode && seekRipple && (
+                <div
+                  className={`pointer-events-none absolute top-1/2 z-30 flex h-20 w-20 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-white/20 bg-white/15 text-xs font-bold text-white shadow-2xl backdrop-blur-xl ${
+                    seekRipple.side === "left" ? "left-[16%]" : "right-[16%]"
+                  }`}
+                >
+                  {seekRipple.side === "left" ? (
+                    <Rewind className="mb-0.5 h-5 w-5" />
+                  ) : (
+                    <FastForward className="mb-0.5 h-5 w-5" />
+                  )}
+                  <span>{seekRipple.label}</span>
+                </div>
+              )}
 
               {loading && !error && (
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/60">
@@ -1246,23 +2265,148 @@ export default function VideoPlayerModal({
                 </div>
               )}
 
-              {/* Center Play Badge when paused */}
-              {!isMiniMode && !loading && !error && isPaused && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleTogglePlayPause();
-                    bumpControlsVisibility();
-                  }}
-                  className="absolute left-1/2 top-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/65 text-white shadow-2xl ring-1 ring-white/25 backdrop-blur-md transition hover:scale-105 hover:bg-rose-600/90"
-                  aria-label="再生"
-                >
-                  <Play className="ml-1 h-8 w-8 fill-current" />
-                </button>
+              {/* Center Liquid Glass Play/Pause & Quick Skip (iPad/iOS friendly!) */}
+              {!isMiniMode &&
+                !loading &&
+                !error &&
+                (isPaused || controlsVisible) &&
+                !swipeScrubState &&
+                !isDraggingSeekBar &&
+                !isLongPress2x && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-8 sm:gap-12">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const el = videoRef.current;
+                      if (!el) return;
+                      const nextT = Math.max(0, el.currentTime - 10);
+                      el.currentTime = nextT;
+                      setCurrentTimeSec(nextT);
+                      triggerSeekRipple("left", -10);
+                      bumpControlsVisibility();
+                    }}
+                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/50 text-white shadow-xl backdrop-blur-xl transition active:scale-90 sm:hidden ${
+                      controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
+                    }`}
+                    aria-label="10秒戻す"
+                  >
+                    <Rewind className="h-5 w-5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTogglePlayPause();
+                      bumpControlsVisibility();
+                    }}
+                    className="pointer-events-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/25 bg-black/55 text-white shadow-2xl backdrop-blur-xl transition hover:scale-105 hover:bg-rose-600/90 active:scale-95"
+                    aria-label={isPaused ? "再生" : "一時停止"}
+                  >
+                    {isPaused ? (
+                      <Play className="ml-1 h-8 w-8 fill-current" />
+                    ) : (
+                      <Pause className="h-7 w-7 fill-current" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const el = videoRef.current;
+                      if (!el) return;
+                      const nextT = Math.min(el.duration || durationSec || Infinity, el.currentTime + 10);
+                      el.currentTime = nextT;
+                      setCurrentTimeSec(nextT);
+                      triggerSeekRipple("right", 10);
+                      bumpControlsVisibility();
+                    }}
+                    className={`pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-black/50 text-white shadow-xl backdrop-blur-xl transition active:scale-90 sm:hidden ${
+                      controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"
+                    }`}
+                    aria-label="10秒進む"
+                  >
+                    <FastForward className="h-5 w-5" />
+                  </button>
+                </div>
               )}
 
-              {/* Documents-style top-right PiP button overlaid directly on the video */}
-              {!isMiniMode && !loading && !error && (
+              {/* Fullscreen Top Liquid Glass Bar (Direct Home button + Exit Fullscreen + Manga Split + PiP on iPad!) */}
+              {!isMiniMode && !loading && !error && anyFullscreen ? (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className={`absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 bg-gradient-to-b from-black/85 via-black/45 to-transparent px-3 pb-6 pt-[max(0.75rem,env(safe-area-inset-top))] transition-opacity duration-200 sm:px-5 ${
+                    controlsVisible || isPaused
+                      ? "opacity-100"
+                      : "pointer-events-none opacity-0"
+                  }`}
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleGoHomeFromPlayer}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.12] px-3.5 py-1.5 text-xs font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] backdrop-blur-2xl transition hover:bg-white/[0.22] active:scale-95"
+                      title="再生を続けたままホームへ戻る"
+                    >
+                      <Home className="h-3.5 w-3.5" />
+                      <span>ホームへ</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleToggleFullscreen}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-black/50 px-3 py-1.5 text-xs font-semibold text-zinc-100 backdrop-blur-xl transition hover:bg-black/75 active:scale-95"
+                      title="全画面を閉じる"
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                      <span className="hidden sm:inline">縮小</span>
+                    </button>
+                    <p className="hidden truncate text-xs font-semibold text-white/90 md:block">
+                      {video.title}
+                    </p>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await handleGoHomeFromPlayer();
+                        if (hasActiveManga) {
+                          onEnableSplitWithManga?.();
+                        } else if (linkedManga.length === 1) {
+                          onEnableSplitWithManga?.();
+                          onSelectVideo(linkedManga[0]);
+                        } else {
+                          setIsMiniMode(false);
+                          setMangaPickerOpen(true);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-100 backdrop-blur-xl transition hover:bg-amber-500/30"
+                    >
+                      <BookOpen className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">漫画同時</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleNativePip();
+                      }}
+                      className={`flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-xl transition ${
+                        isNativePipActive
+                          ? "border-rose-400/70 bg-rose-600/90 text-white"
+                          : "border-white/20 bg-black/55 text-white/90 hover:bg-black/80"
+                      }`}
+                      title="ピクチャーインピクチャー"
+                      aria-label="ピクチャーインピクチャー"
+                    >
+                      <PictureInPicture2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : !isMiniMode && !loading && !error ? (
+                /* Non-fullscreen top-right PiP button */
                 <button
                   type="button"
                   onClick={(e) => {
@@ -1283,81 +2427,416 @@ export default function VideoPlayerModal({
                 >
                   <PictureInPicture2 className="h-5 w-5" />
                 </button>
-              )}
+              ) : null}
 
-              {/* Unified YouTube-style Bottom Overlay Controls (Single Bar with Preview Seek!) */}
+              {/* Unified YouTube-style Bottom Overlay Controls (Single Bar with Preview Seek + iOS Safe Area!) */}
               {!isMiniMode && !error && (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-3 pb-2.5 pt-10 transition-opacity duration-200 sm:px-4 ${
-                    controlsVisible || isPaused || hoverSeekRatio !== null || speedMenuOpen || qualityMenuOpen
+                  className={`absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-3 pt-10 transition-opacity duration-200 sm:px-4 ${
+                    anyFullscreen ? "pb-[max(0.75rem,env(safe-area-inset-bottom))]" : "pb-2.5"
+                  } ${
+                    controlsVisible ||
+                    isPaused ||
+                    hoverSeekRatio !== null ||
+                    zoomSeekOpen ||
+                    speedMenuOpen ||
+                    qualityMenuOpen
                       ? "opacity-100"
                       : "pointer-events-none opacity-0"
                   }`}
                 >
-                  {/* Integrated Seek Bar with Hover Storyboard Preview */}
+                  {/* Precision Zoomed Seekbar Panel (+/-15s / +/-30s / +/-60s with 1-second tick marks & locked window!) */}
+                  {zoomSeekOpen && durationSec > 0 && (() => {
+                    const half = zoomHalfWindowSec;
+                    const fullSpan = Math.min(durationSec, half * 2);
+                    const safeStart = Math.max(
+                      0,
+                      Math.min(durationSec - fullSpan, zoomWindowCenterSec - half)
+                    );
+                    const safeEnd = Math.min(durationSec, safeStart + fullSpan);
+                    const span = Math.max(1, safeEnd - safeStart);
+                    const activeZoomSec =
+                      hoverSeekRatio !== null ? hoverSeekRatio * durationSec : displayTimeSec;
+                    const markerPct = Math.min(
+                      100,
+                      Math.max(0, ((activeZoomSec - safeStart) / span) * 100)
+                    );
+                    const playedZoomPct = Math.min(
+                      100,
+                      Math.max(0, ((displayTimeSec - safeStart) / span) * 100)
+                    );
+
+                    // Build crisp 1-second tick marks + major labels
+                    const majorStep =
+                      zoomHalfWindowSec === 15 ? 5 : zoomHalfWindowSec === 30 ? 10 : 20;
+                    const ticks: Array<{ sec: number; pct: number; major: boolean }> = [];
+                    const firstTick = Math.ceil(safeStart);
+                    for (let s = firstTick; s <= Math.floor(safeEnd); s += 1) {
+                      if (zoomHalfWindowSec === 60 && s % 2 !== 0) continue;
+                      ticks.push({
+                        sec: s,
+                        pct: ((s - safeStart) / span) * 100,
+                        major: s % majorStep === 0,
+                      });
+                    }
+
+                    const getZoomPositionFromClientX = (clientX: number) => {
+                      const bar = zoomSeekBarRef.current;
+                      if (!bar) {
+                        return {
+                          localRatio: 0,
+                          sec: displayTimeSec,
+                          fullRatio: durationSec > 0 ? displayTimeSec / durationSec : 0,
+                        };
+                      }
+                      const rect = bar.getBoundingClientRect();
+                      const localRatio =
+                        rect.width > 0
+                          ? Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+                          : 0;
+                      const sec = Math.min(durationSec, Math.max(0, safeStart + localRatio * span));
+                      const fullRatio = Math.min(0.999, Math.max(0, sec / durationSec));
+                      return { localRatio, sec, fullRatio };
+                    };
+
+                    return (
+                      <div className="mb-2.5 rounded-2xl border border-white/15 bg-black/75 p-2.5 shadow-2xl backdrop-blur-2xl">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <ZoomIn className="h-3.5 w-3.5 text-rose-400" />
+                            <span className="font-bold text-white">精密拡大シーク</span>
+                            <div className="ml-1 flex items-center gap-1">
+                              {([15, 30, 60] as const).map((halfOpt) => (
+                                <button
+                                  key={halfOpt}
+                                  type="button"
+                                  onClick={() => setZoomHalfWindowSec(halfOpt)}
+                                  className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold transition ${
+                                    zoomHalfWindowSec === halfOpt
+                                      ? "bg-rose-600 text-white"
+                                      : "bg-white/10 text-zinc-300 hover:bg-white/20"
+                                  }`}
+                                >
+                                  ±{halfOpt}秒
+                                </button>
+                              ))}
+                            </div>
+                            <div className="ml-1 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setZoomWindowCenterSec((prev) =>
+                                    Math.max(0, prev - zoomHalfWindowSec)
+                                  );
+                                  bumpControlsVisibility();
+                                }}
+                                disabled={safeStart <= 0.1}
+                                className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-200 transition hover:bg-white/20 disabled:opacity-35"
+                                title="表示範囲を前へ移動"
+                              >
+                                ◀
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setZoomWindowCenterSec((prev) =>
+                                    Math.min(durationSec, prev + zoomHalfWindowSec)
+                                  );
+                                  bumpControlsVisibility();
+                                }}
+                                disabled={safeEnd >= durationSec - 0.1}
+                                className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-200 transition hover:bg-white/20 disabled:opacity-35"
+                                title="表示範囲を次へ移動"
+                              >
+                                ▶
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            {[-5, -1, 1, 5].map((delta) => (
+                              <button
+                                key={delta}
+                                type="button"
+                                onClick={() => {
+                                  const nextSec = Math.min(
+                                    durationSec,
+                                    Math.max(0, currentTimeSec + delta)
+                                  );
+                                  seekToTime(nextSec);
+                                  bumpControlsVisibility();
+                                }}
+                                className="rounded-md border border-white/15 bg-white/[0.08] px-2 py-0.5 font-mono text-[10px] font-bold text-zinc-100 transition hover:bg-white/20 active:scale-95"
+                              >
+                                {delta > 0 ? `+${delta}秒` : `${delta}秒`}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => setZoomSeekOpen(false)}
+                              className="ml-1 rounded-full p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
+                              aria-label="拡大シークを閉じる"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Zoomed 1-Second Ruler Scrubber (window locked during drag + live main-screen scrub!) */}
+                        <div
+                          ref={zoomSeekBarRef}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            isDraggingZoomSeekRef.current = true;
+                            setIsDraggingSeekBar(true);
+                            e.currentTarget.setPointerCapture(e.pointerId);
+                            const pos = getZoomPositionFromClientX(e.clientX);
+                            pendingDragRatioRef.current = pos.fullRatio;
+                            setHoverSeekRatio(pos.fullRatio);
+                            setHoverPopupLeftPct(pos.localRatio * 100);
+                            beginLiveScrub(pos.sec);
+                            bumpControlsVisibility();
+                          }}
+                          onPointerMove={(e) => {
+                            const pos = getZoomPositionFromClientX(e.clientX);
+                            if (isDraggingZoomSeekRef.current) {
+                              pendingDragRatioRef.current = pos.fullRatio;
+                              scrubMainVideoLive(pos.sec);
+                            }
+                            setHoverSeekRatio(pos.fullRatio);
+                            setHoverPopupLeftPct(pos.localRatio * 100);
+                          }}
+                          onPointerUp={(e) => {
+                            if (isDraggingZoomSeekRef.current) {
+                              isDraggingZoomSeekRef.current = false;
+                              setIsDraggingSeekBar(false);
+                              const finalRatio =
+                                pendingDragRatioRef.current ??
+                                getZoomPositionFromClientX(e.clientX).fullRatio;
+                              pendingDragRatioRef.current = null;
+                              finishLiveScrub(finalRatio * durationSec);
+                              try {
+                                e.currentTarget.releasePointerCapture(e.pointerId);
+                              } catch {
+                                // Ignore
+                              }
+                            }
+                            if (e.pointerType !== "mouse") {
+                              setHoverSeekRatio(null);
+                              setHoverPopupLeftPct(null);
+                            }
+                          }}
+                          onPointerCancel={(e) => {
+                            if (isDraggingZoomSeekRef.current) {
+                              isDraggingZoomSeekRef.current = false;
+                              setIsDraggingSeekBar(false);
+                              pendingDragRatioRef.current = null;
+                              cancelLiveScrub();
+                              try {
+                                e.currentTarget.releasePointerCapture(e.pointerId);
+                              } catch {
+                                // Ignore
+                              }
+                            }
+                            setHoverSeekRatio(null);
+                            setHoverPopupLeftPct(null);
+                          }}
+                          onPointerLeave={() => {
+                            if (!isDraggingZoomSeekRef.current) {
+                              setHoverSeekRatio(null);
+                              setHoverPopupLeftPct(null);
+                            }
+                          }}
+                          className="ios-no-callout relative h-11 w-full cursor-pointer touch-none select-none rounded-xl bg-white/[0.06] px-1"
+                        >
+                          {/* 1-second ruler ticks */}
+                          {ticks.map((tk) => (
+                            <div
+                              key={tk.sec}
+                              className="pointer-events-none absolute bottom-0 flex flex-col items-center"
+                              style={{ left: `${tk.pct}%`, transform: "translateX(-50%)" }}
+                            >
+                              {tk.major && (
+                                <span className="mb-1 font-mono text-[9px] text-zinc-400">
+                                  {formatDuration(tk.sec)}
+                                </span>
+                              )}
+                              <div
+                                className={
+                                  tk.major ? "h-3 w-0.5 bg-white/50" : "h-1.5 w-px bg-white/25"
+                                }
+                              />
+                            </div>
+                          ))}
+
+                          {/* Played progress inside zoomed window */}
+                          <div
+                            className="pointer-events-none absolute inset-y-0 left-0 rounded-l-xl bg-rose-500/20"
+                            style={{ width: `${playedZoomPct}%` }}
+                          />
+
+                          {/* Crisp red hairline playhead */}
+                          <div
+                            className="pointer-events-none absolute inset-y-0 w-0.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.9)]"
+                            style={{ left: `${markerPct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Integrated Seek Bar with Live Main-Screen Scrub + Hover Preview + Pull-Up 5x Precision Scrub */}
                   <div
                     ref={seekBarRef}
                     onPointerDown={(e) => {
                       e.stopPropagation();
                       isDraggingSeekRef.current = true;
+                      setIsDraggingSeekBar(true);
+                      fineScrubAnchorRef.current = null;
+                      setFineScrubActive(false);
                       e.currentTarget.setPointerCapture(e.pointerId);
-                      setHoverSeekRatio(getSeekRatioFromClientX(e.clientX));
-                      handleSeekToClientX(e.clientX);
+                      const ratio = getSeekRatioFromClientX(e.clientX);
+                      pendingDragRatioRef.current = ratio;
+                      setHoverSeekRatio(ratio);
+                      setHoverPopupLeftPct(ratio * 100);
+                      beginLiveScrub(ratio * durationSec);
                       bumpControlsVisibility();
                     }}
                     onPointerMove={(e) => {
-                      const ratio = getSeekRatioFromClientX(e.clientX);
-                      setHoverSeekRatio(ratio);
-                      if (isDraggingSeekRef.current) {
-                        handleSeekToClientX(e.clientX);
+                      const bar = seekBarRef.current;
+                      let ratio = getSeekRatioFromClientX(e.clientX);
+
+                      // YouTube iOS-style pull-up gesture: pulling finger/mouse >32px above the bar engages 5x precision scrub!
+                      if (isDraggingSeekRef.current && bar) {
+                        const rect = bar.getBoundingClientRect();
+                        const pulledUp = rect.top - e.clientY > 32;
+                        if (pulledUp) {
+                          if (!fineScrubAnchorRef.current) {
+                            fineScrubAnchorRef.current = {
+                              clientX: e.clientX,
+                              baseRatio: pendingDragRatioRef.current ?? hoverSeekRatio ?? ratio,
+                            };
+                            setFineScrubActive(true);
+                          }
+                          const dx = e.clientX - fineScrubAnchorRef.current.clientX;
+                          const fineDeltaRatio = (dx / Math.max(1, rect.width)) * 0.2; // 5x finer control!
+                          ratio = Math.min(
+                            0.999,
+                            Math.max(0, fineScrubAnchorRef.current.baseRatio + fineDeltaRatio)
+                          );
+                        } else if (fineScrubAnchorRef.current) {
+                          fineScrubAnchorRef.current = null;
+                          setFineScrubActive(false);
+                        }
                       }
+
+                      if (isDraggingSeekRef.current) {
+                        pendingDragRatioRef.current = ratio;
+                        scrubMainVideoLive(ratio * durationSec);
+                      }
+                      setHoverSeekRatio(ratio);
+                      setHoverPopupLeftPct(ratio * 100);
                     }}
                     onPointerUp={(e) => {
                       if (isDraggingSeekRef.current) {
                         isDraggingSeekRef.current = false;
+                        setIsDraggingSeekBar(false);
+                        const finalRatio =
+                          pendingDragRatioRef.current ?? getSeekRatioFromClientX(e.clientX);
+                        pendingDragRatioRef.current = null;
+                        finishLiveScrub(finalRatio * durationSec);
+                        fineScrubAnchorRef.current = null;
+                        setFineScrubActive(false);
                         try {
                           e.currentTarget.releasePointerCapture(e.pointerId);
                         } catch {
                           // Ignore
                         }
                       }
+                      if (e.pointerType !== "mouse") {
+                        setHoverSeekRatio(null);
+                        setHoverPopupLeftPct(null);
+                      }
+                    }}
+                    onPointerCancel={(e) => {
+                      if (isDraggingSeekRef.current) {
+                        isDraggingSeekRef.current = false;
+                        setIsDraggingSeekBar(false);
+                        pendingDragRatioRef.current = null;
+                        cancelLiveScrub();
+                        fineScrubAnchorRef.current = null;
+                        setFineScrubActive(false);
+                        try {
+                          e.currentTarget.releasePointerCapture(e.pointerId);
+                        } catch {
+                          // Ignore
+                        }
+                      }
+                      setHoverSeekRatio(null);
+                      setHoverPopupLeftPct(null);
                     }}
                     onPointerLeave={() => {
                       if (!isDraggingSeekRef.current) {
                         setHoverSeekRatio(null);
+                        setHoverPopupLeftPct(null);
+                        setFineScrubActive(false);
                       }
                     }}
-                    className="group/seek relative mb-2 flex h-5 w-full cursor-pointer touch-none items-center select-none"
+                    className="group/seek ios-no-callout relative mb-1.5 flex h-7 w-full cursor-pointer touch-none items-center select-none"
                     role="slider"
                     aria-label="シークバー"
                     aria-valuemin={0}
                     aria-valuemax={Math.round(durationSec)}
-                    aria-valuenow={Math.round(currentTimeSec)}
+                    aria-valuenow={Math.round(displayTimeSec)}
                   >
-                    {/* Floating Thumbnail Preview Popup on Hover */}
-                    {hoverSeekRatio !== null && durationSec > 0 && (
-                      <div
-                        className="pointer-events-none absolute bottom-7 z-30 -translate-x-1/2 overflow-hidden rounded-xl border border-white/20 bg-zinc-950 shadow-2xl shadow-black"
-                        style={{
-                          left: `${Math.min(88, Math.max(12, hoverSeekRatio * 100))}%`,
-                        }}
-                      >
+                    {/* Floating Thumbnail Preview Popup (Persistent Visible 360p <video> + Instant Sprite Backdrop!) */}
+                    <div
+                      aria-hidden={hoverSeekRatio === null || durationSec <= 0}
+                      className={`pointer-events-none absolute z-30 -translate-x-1/2 overflow-hidden rounded-xl border border-white/25 bg-zinc-950 shadow-2xl shadow-black transition-opacity duration-75 ${
+                        zoomSeekOpen ? "bottom-36 sm:bottom-32" : "bottom-7"
+                      } ${
+                        hoverSeekRatio !== null && durationSec > 0 ? "opacity-100" : "opacity-0"
+                      }`}
+                      style={{
+                        left: `clamp(114px, ${(hoverPopupLeftPct ?? (hoverSeekRatio ?? 0) * 100).toFixed(2)}%, calc(100% - 114px))`,
+                      }}
+                    >
+                      <div className="relative h-[126px] w-[224px] overflow-hidden bg-black">
                         {spriteUrl && (
                           <div
-                            className="h-[108px] w-[192px] bg-black bg-no-repeat"
+                            className="absolute inset-0 z-0 bg-black bg-no-repeat"
                             style={{
                               backgroundImage: `url(${spriteUrl})`,
-                              backgroundSize: "600% 600%",
-                              backgroundPosition: `${(seekHoverCol / 5) * 100}% ${(seekHoverRow / 5) * 100}%`,
+                              backgroundSize: `${spriteGrid.cols * 100}% ${spriteGrid.rows * 100}%`,
+                              backgroundPosition: `${(seekHoverCol / Math.max(1, spriteGrid.cols - 1)) * 100}% ${(seekHoverRow / Math.max(1, spriteGrid.rows - 1)) * 100}%`,
                             }}
                           />
                         )}
-                        <div className="bg-black/90 px-2.5 py-1 text-center font-mono text-xs font-bold text-white">
-                          {formatDuration(hoverSeekRatio * durationSec)}
-                        </div>
+                        <video
+                          ref={previewVideoRef}
+                          muted
+                          playsInline
+                          preload="auto"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                          className={`absolute inset-0 z-10 h-full w-full bg-black object-contain transition-opacity duration-75 ${
+                            isLivePreviewSynced ? "opacity-100" : "opacity-[0.01]"
+                          }`}
+                        />
                       </div>
-                    )}
+                      <div className="flex items-center justify-center gap-1.5 bg-black/90 px-2.5 py-1 font-mono text-xs font-bold text-white">
+                        <span>{formatDuration((hoverSeekRatio ?? 0) * durationSec)}</span>
+                        {!isLivePreviewSynced && (
+                          <Loader2 className="h-3 w-3 animate-spin text-zinc-400" />
+                        )}
+                        {fineScrubActive && (
+                          <span className="rounded bg-rose-500/30 px-1.5 py-0.5 text-[10px] text-rose-200">
+                            5倍精密
+                          </span>
+                        )}
+                      </div>
+                    </div>
 
                     {/* Track: full-cache + buffered + hover + played */}
                     <div className="relative h-1 w-full overflow-hidden rounded-full bg-white/20 transition-all group-hover/seek:h-1.5">
@@ -1403,7 +2882,9 @@ export default function VideoPlayerModal({
 
                     {/* Playhead dot */}
                     <div
-                      className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 scale-0 rounded-full bg-rose-500 shadow ring-2 ring-white transition-transform group-hover/seek:scale-100"
+                      className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-rose-500 shadow ring-2 ring-white transition-transform ${
+                        isDraggingSeekBar ? "scale-100" : "scale-0 group-hover/seek:scale-100"
+                      }`}
                       style={{ left: `${playedPercent}%` }}
                     />
                   </div>
@@ -1502,9 +2983,32 @@ export default function VideoPlayerModal({
                       </div>
 
                       <span className="ml-1 font-mono text-[11px] text-zinc-200 sm:text-xs">
-                        {formatDuration(currentTimeSec)}{" "}
+                        {formatDuration(displayTimeSec)}{" "}
                         <span className="text-zinc-400">/ {formatDuration(durationSec)}</span>
                       </span>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setZoomSeekOpen((prev) => {
+                            const next = !prev;
+                            if (next) {
+                              setZoomWindowCenterSec(currentTimeSec);
+                            }
+                            return next;
+                          });
+                          bumpControlsVisibility();
+                        }}
+                        className={`ml-1 inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[11px] font-semibold transition ${
+                          zoomSeekOpen
+                            ? "border-rose-400/70 bg-rose-600/90 text-white"
+                            : "border-white/15 bg-white/[0.08] text-zinc-200 hover:bg-white/20"
+                        }`}
+                        title="シークバーを拡大して1秒単位で細かく操作"
+                      >
+                        <ZoomIn className="h-3.5 w-3.5" />
+                        <span>拡大シーク</span>
+                      </button>
                     </div>
 
                     <div className="relative flex items-center gap-1 sm:gap-1.5">
@@ -1618,9 +3122,9 @@ export default function VideoPlayerModal({
                         type="button"
                         onClick={handleToggleFullscreen}
                         className="flex h-8 w-8 items-center justify-center rounded-lg transition hover:bg-white/15"
-                        title={isFullscreen ? "フルスクリーン終了 (F)" : "フルスクリーン (F)"}
+                        title={anyFullscreen ? "フルスクリーン終了 (F)" : "フルスクリーン (F)"}
                       >
-                        {isFullscreen ? (
+                        {anyFullscreen ? (
                           <Minimize className="h-4 w-4" />
                         ) : (
                           <Maximize className="h-4 w-4" />
@@ -1634,14 +3138,25 @@ export default function VideoPlayerModal({
               {/* Mini-mode top overlay */}
               {isMiniMode && (
                 <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent p-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsMiniMode(false)}
-                    className="inline-flex items-center gap-1 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-sm hover:bg-black"
-                  >
-                    <Maximize2 className="h-3 w-3" />
-                    拡大
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setIsMiniMode(false)}
+                      className="inline-flex items-center gap-1 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-sm hover:bg-black"
+                    >
+                      <Maximize2 className="h-3 w-3" />
+                      拡大
+                    </button>
+                    {hasActiveManga && onToggleSplitWithManga && (
+                      <button
+                        type="button"
+                        onClick={onToggleSplitWithManga}
+                        className="inline-flex items-center gap-1 rounded-full bg-sky-600/85 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-sm hover:bg-sky-500"
+                      >
+                        {splitWithManga ? "ミニ窓へ" : "画面分割"}
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="button"
                     onClick={handleCloseAll}
@@ -1656,7 +3171,31 @@ export default function VideoPlayerModal({
 
             {/* Mini-mode bottom bar OR Full-mode YouTube Info + Controls + Below-Video Discovery */}
             {isMiniMode ? (
-              <div className="flex items-center justify-between gap-2 border-t border-zinc-800 bg-zinc-950 px-3 py-2">
+              <div className="border-t border-zinc-800 bg-zinc-950 px-3 py-2">
+                {durationSec > 0 && (
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="font-mono text-[10px] text-zinc-400">
+                      {formatDuration(currentTimeSec)}
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(1, Math.floor(durationSec))}
+                      value={Math.min(Math.floor(durationSec), Math.floor(currentTimeSec))}
+                      onChange={(e) => {
+                        const t = Number(e.target.value);
+                        if (videoRef.current) videoRef.current.currentTime = t;
+                        setCurrentTimeSec(t);
+                      }}
+                      className="h-1 flex-1 cursor-pointer accent-rose-500"
+                      aria-label="動画シーク"
+                    />
+                    <span className="font-mono text-[10px] text-zinc-500">
+                      {formatDuration(durationSec)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={() => setIsMiniMode(false)}
@@ -1666,9 +3205,11 @@ export default function VideoPlayerModal({
                     {video.title}
                   </p>
                   <p className="text-[10px] text-zinc-400">
-                    {queue.length > 1
-                      ? `キュー ${queueIndex + 1} / ${queue.length}`
-                      : "ミニプレイヤー再生中"}
+                    {isSplitDocked
+                      ? "漫画と同時再生中"
+                      : queue.length > 1
+                        ? `キュー ${queueIndex + 1} / ${queue.length}`
+                        : "ミニプレイヤー再生中"}
                   </p>
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
@@ -1715,11 +3256,53 @@ export default function VideoPlayerModal({
                     </button>
                   )}
                 </div>
+                </div>
               </div>
             ) : (
               <>
                 {/* Title, meta, and YouTube action bar (clean — all playback controls are inside the video HUD!) */}
                 <div className="mt-3.5 space-y-3">
+                  {/* Cross-media Guidance Banner when matching Manga exists */}
+                  {linkedManga.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/35 bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-sky-500/15 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)] backdrop-blur-xl">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <SmallThumb
+                          video={linkedManga[0]}
+                          accessToken={accessToken}
+                          masterKey={masterKey}
+                          thumbVersion={thumbVersions[linkedManga[0].id] ?? 0}
+                        />
+                        <div className="min-w-0">
+                          <div className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-200">
+                            <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                            <span>
+                              この作品の原作漫画があります（{linkedManga.length}冊）
+                            </span>
+                          </div>
+                          <p className="truncate text-xs font-semibold text-white">
+                            {linkedManga[0].title}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (linkedManga.length === 1) {
+                            onEnableSplitWithManga?.();
+                            setIsMiniMode(true);
+                            onSelectVideo(linkedManga[0]);
+                          } else {
+                            setMangaPickerOpen(true);
+                          }
+                        }}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-500 px-3.5 py-1.5 text-xs font-bold text-zinc-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400"
+                      >
+                        <BookOpen className="h-3.5 w-3.5" />
+                        <span>動画と同時に読む</span>
+                      </button>
+                    </div>
+                  )}
+
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <h1 className="text-base font-bold leading-snug text-white sm:text-xl">
@@ -1827,6 +3410,101 @@ export default function VideoPlayerModal({
                       ))}
                     </div>
                   )}
+
+                  {/* Mobile / iPad Portrait Series-or-Related Recommendation Strip */}
+                  {(seriesVideos.length > 0 || relatedVideos.length > 0) && (
+                    <div className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-3 lg:hidden">
+                      <div className="mb-2.5 flex items-center justify-between gap-2">
+                        <h3 className="inline-flex items-center gap-1.5 text-xs font-bold text-white">
+                          {seriesVideos.length > 0 ? (
+                            <>
+                              <Sparkles className="h-3.5 w-3.5 text-rose-400" />
+                              <span className="text-rose-200">
+                                このシリーズ（他 {seriesVideos.length} 本）
+                              </span>
+                            </>
+                          ) : (
+                            <span>関連するおすすめ</span>
+                          )}
+                        </h3>
+                        {seriesVideos.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              for (const sv of seriesVideos) {
+                                if (!queueIdSet.has(sv.id)) onAddToQueue(sv);
+                              }
+                              showToast(`シリーズ ${seriesVideos.length} 本をキューに追加しました`);
+                            }}
+                            className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold text-rose-200"
+                          >
+                            全話をキューへ
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex gap-2.5 overflow-x-auto pb-1">
+                        {(seriesVideos.length > 0 ? seriesVideos : relatedVideos).map((item) => {
+                          const itemGenres = getContentGenresOnly(videoGenresMap[item.id] ?? []);
+                          return (
+                            <div
+                              key={`mob-rec-${item.id}`}
+                              className={`flex w-56 shrink-0 flex-col gap-1.5 rounded-xl border p-2 transition ${
+                                seriesVideos.length > 0
+                                  ? "border-rose-500/30 bg-rose-500/[0.06]"
+                                  : "border-zinc-800/70 bg-zinc-900/50"
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => onSelectVideo(item)}
+                                className="flex items-center gap-2 text-left"
+                              >
+                                <SmallThumb
+                                  video={item}
+                                  accessToken={accessToken}
+                                  masterKey={masterKey}
+                                  thumbVersion={thumbVersions[item.id] ?? 0}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p className="line-clamp-2 text-[11px] font-semibold leading-snug text-zinc-100">
+                                    {item.title}
+                                  </p>
+                                  {item.duration > 0 && (
+                                    <p className="mt-0.5 font-mono text-[10px] text-zinc-400">
+                                      {formatDuration(item.duration)}
+                                    </p>
+                                  )}
+                                </div>
+                              </button>
+                              <div className="flex flex-wrap items-center justify-between gap-1">
+                                <div className="flex flex-wrap items-center gap-1">
+                                  {itemGenres.slice(0, 2).map((g) => (
+                                    <span
+                                      key={g}
+                                      className={`rounded border px-1 py-0.5 text-[9px] font-medium ${getGenreStyle(
+                                        g,
+                                        customGenres
+                                      )}`}
+                                    >
+                                      #{g}
+                                    </span>
+                                  ))}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => onEditTags(item)}
+                                  className="inline-flex items-center gap-0.5 rounded-md border border-zinc-700/80 bg-zinc-950/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 hover:border-rose-500/50 hover:text-white"
+                                >
+                                  <Tag className="h-2.5 w-2.5" />
+                                  <span>ジャンル</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* BELOW-PLAYER YOUTUBE DISCOVERY & SEARCH FEED */}
@@ -1835,24 +3513,37 @@ export default function VideoPlayerModal({
                     <h2 className="text-sm font-bold text-white">
                       再生しながら他の動画を探す ({browseVideos.length} 件)
                     </h2>
-                    <div className="relative w-full sm:max-w-xs">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-                      <input
-                        type="text"
-                        value={browseQuery}
-                        onChange={(e) => setBrowseQuery(e.target.value)}
-                        placeholder="動画・ジャンルを検索..."
-                        className="w-full rounded-full border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
-                      />
-                      {browseQuery && (
-                        <button
-                          type="button"
-                          onClick={() => setBrowseQuery("")}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                    <div className="flex w-full items-center gap-2 sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBrowseShuffleSeed(Math.floor(Math.random() * 0x7fffffff))
+                        }
+                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-rose-500/50 hover:bg-zinc-800 hover:text-white"
+                        title="下の動画リストをシャッフル"
+                      >
+                        <Shuffle className="h-3.5 w-3.5 text-rose-400" />
+                        <span>シャッフル</span>
+                      </button>
+                      <div className="relative flex-1 sm:w-64 sm:flex-initial">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+                        <input
+                          type="text"
+                          value={browseQuery}
+                          onChange={(e) => setBrowseQuery(e.target.value)}
+                          placeholder="動画・ジャンルを検索..."
+                          className="w-full rounded-full border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-8 text-xs text-zinc-100 placeholder-zinc-500 focus:border-rose-500 focus:outline-none"
+                        />
+                        {browseQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setBrowseQuery("")}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -2013,38 +3704,84 @@ export default function VideoPlayerModal({
                             >
                               {item.title}
                             </p>
+                            {(() => {
+                              const qGenres = getContentGenresOnly(videoGenresMap[item.id] ?? []);
+                              return qGenres.length > 0 ? (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {qGenres.slice(0, 2).map((g) => (
+                                    <span
+                                      key={g}
+                                      className={`rounded border px-1 py-0.5 text-[9px] font-medium ${getGenreStyle(
+                                        g,
+                                        customGenres
+                                      )}`}
+                                    >
+                                      #{g}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null;
+                            })()}
                           </div>
                         </button>
 
-                        <div className="flex shrink-0 flex-col gap-0.5">
-                          <button
-                            type="button"
-                            disabled={idx === 0}
-                            onClick={() => onMoveQueueItem(idx, idx - 1)}
-                            className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-25"
-                            title="上へ"
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={idx === queue.length - 1}
-                            onClick={() => onMoveQueueItem(idx, idx + 1)}
-                            className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-25"
-                            title="下へ"
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </button>
-                          {!isCurrent && (
+                        <div className="flex shrink-0 flex-col items-center gap-0.5">
+                          <div className="flex items-center gap-0.5">
                             <button
                               type="button"
-                              onClick={() => onRemoveFromQueue(idx)}
-                              className="rounded p-1 text-zinc-400 hover:bg-rose-950/60 hover:text-rose-300"
-                              title="削除"
+                              onClick={() => onEditTags(item)}
+                              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-rose-300"
+                              title="ジャンル・タグを編集"
                             >
-                              <X className="h-3 w-3" />
+                              <Tag className="h-3 w-3" />
                             </button>
-                          )}
+                            <button
+                              type="button"
+                              onClick={() => onToggleFavorite(item.id)}
+                              className={`rounded p-1 transition ${
+                                userMetaMap[item.id]?.favorite
+                                  ? "text-rose-400 hover:bg-rose-950/50"
+                                  : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                              }`}
+                              title="お気に入り切替"
+                            >
+                              <Heart
+                                className={`h-3 w-3 ${
+                                  userMetaMap[item.id]?.favorite ? "fill-current" : ""
+                                }`}
+                              />
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => onMoveQueueItem(idx, idx - 1)}
+                              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-25"
+                              title="上へ"
+                            >
+                              <ArrowUp className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === queue.length - 1}
+                              onClick={() => onMoveQueueItem(idx, idx + 1)}
+                              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-25"
+                              title="下へ"
+                            >
+                              <ArrowDown className="h-3 w-3" />
+                            </button>
+                            {!isCurrent && (
+                              <button
+                                type="button"
+                                onClick={() => onRemoveFromQueue(idx)}
+                                className="rounded p-1 text-zinc-400 hover:bg-rose-950/60 hover:text-rose-300"
+                                title="削除"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -2052,45 +3789,110 @@ export default function VideoPlayerModal({
                 </div>
               </div>
 
-              {/* Up Next / Related Videos (YouTube Right Column) */}
-              {relatedVideos.length > 0 && (
+              {/* Series First (when available), otherwise Related Videos (YouTube Right Column) */}
+              {seriesVideos.length > 0 && (
                 <div className="space-y-2.5">
-                  <h3 className="px-1 text-xs font-bold uppercase tracking-wider text-zinc-400">
-                    次の動画・おすすめ
-                  </h3>
+                  <div className="flex items-center justify-between gap-2 px-1">
+                    <h3 className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-rose-300">
+                      <Sparkles className="h-3.5 w-3.5 text-rose-400" />
+                      <span>このシリーズ（他 {seriesVideos.length} 本）</span>
+                    </h3>
+                    {seriesVideos.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          for (const sv of seriesVideos) {
+                            if (!queueIdSet.has(sv.id)) {
+                              onAddToQueue(sv);
+                            }
+                          }
+                          showToast(`シリーズ ${seriesVideos.length} 本をキューに追加しました`);
+                        }}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold text-rose-200 transition hover:bg-rose-500/25"
+                      >
+                        全話をキューへ
+                      </button>
+                    )}
+                  </div>
                   <div className="space-y-2">
-                    {relatedVideos.map((rel) => {
-                      const inQ = queueIdSet.has(rel.id);
+                    {seriesVideos.map((sv) => {
+                      const inQ = queueIdSet.has(sv.id);
                       return (
                         <div
-                          key={`rel-${rel.id}`}
-                          className="rounded-xl border border-zinc-800/70 bg-zinc-900/40 p-2 transition hover:border-zinc-700 hover:bg-zinc-900"
+                          key={`series-${sv.id}`}
+                          className="rounded-xl border border-rose-500/30 bg-rose-500/[0.06] p-2 transition hover:border-rose-400/50 hover:bg-rose-500/[0.12]"
                         >
                           <button
                             type="button"
-                            onClick={() => onSelectVideo(rel)}
+                            onClick={() => onSelectVideo(sv)}
                             className="flex w-full items-start gap-2.5 text-left"
                           >
                             <SmallThumb
-                              video={rel}
+                              video={sv}
                               accessToken={accessToken}
                               masterKey={masterKey}
-                              thumbVersion={thumbVersions[rel.id] ?? 0}
+                              thumbVersion={thumbVersions[sv.id] ?? 0}
                             />
                             <div className="min-w-0 flex-1">
+                              <span className="mb-1 inline-block rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-bold text-rose-200">
+                                シリーズ
+                              </span>
                               <p className="line-clamp-2 text-xs font-semibold leading-snug text-zinc-100">
-                                {rel.title}
+                                {sv.title}
                               </p>
-                              <p className="mt-1 text-[10px] text-zinc-500">
-                                {rel.height ? `${rel.height}p` : ""}
-                                {rel.sizeBytes ? ` • ${formatBytes(rel.sizeBytes)}` : ""}
+                              <p className="mt-1 text-[10px] text-zinc-400">
+                                {sv.duration > 0 ? formatDuration(sv.duration) : ""}
+                                {sv.height ? ` • ${sv.height}p` : ""}
                               </p>
+                              {(() => {
+                                const svGenres = getContentGenresOnly(videoGenresMap[sv.id] ?? []);
+                                return svGenres.length > 0 ? (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {svGenres.slice(0, 3).map((g) => (
+                                      <span
+                                        key={g}
+                                        className={`rounded border px-1 py-0.5 text-[9px] font-medium ${getGenreStyle(
+                                          g,
+                                          customGenres
+                                        )}`}
+                                      >
+                                        #{g}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null;
+                              })()}
                             </div>
                           </button>
-                          <div className="mt-2 flex justify-end">
+                          <div className="mt-2 flex items-center justify-end gap-1.5">
                             <button
                               type="button"
-                              onClick={() => onAddToQueue(rel)}
+                              onClick={() => onToggleFavorite(sv.id)}
+                              className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition ${
+                                userMetaMap[sv.id]?.favorite
+                                  ? "border-rose-500/40 bg-rose-500/20 text-rose-300"
+                                  : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white"
+                              }`}
+                              title="お気に入り切替"
+                            >
+                              <Heart
+                                className={`h-3 w-3 ${
+                                  userMetaMap[sv.id]?.favorite ? "fill-current" : ""
+                                }`}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onEditTags(sv)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-semibold text-zinc-300 transition hover:border-rose-500/50 hover:text-white"
+                              title="ジャンル・タグを編集"
+                            >
+                              <Tag className="h-3 w-3" />
+                              <span>ジャンル</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onAddToQueue(sv)}
                               className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
                                 inQ
                                   ? "border-indigo-500/40 bg-indigo-500/20 text-indigo-200"
@@ -2116,10 +3918,225 @@ export default function VideoPlayerModal({
                   </div>
                 </div>
               )}
+
+              {/* Related Videos ONLY when no series exists (Series takes exclusive priority in recommendation column!) */}
+              {seriesVideos.length === 0 && relatedVideos.length > 0 && (
+                <div className="space-y-2.5">
+                  <h3 className="px-1 text-xs font-bold uppercase tracking-wider text-zinc-400">
+                    関連するおすすめ
+                  </h3>
+                  <div className="space-y-2">
+                    {relatedVideos.map((rel) => {
+                        const inQ = queueIdSet.has(rel.id);
+                        return (
+                          <div
+                            key={`rel-${rel.id}`}
+                            className="rounded-xl border border-zinc-800/70 bg-zinc-900/40 p-2 transition hover:border-zinc-700 hover:bg-zinc-900"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => onSelectVideo(rel)}
+                              className="flex w-full items-start gap-2.5 text-left"
+                            >
+                              <SmallThumb
+                                video={rel}
+                                accessToken={accessToken}
+                                masterKey={masterKey}
+                                thumbVersion={thumbVersions[rel.id] ?? 0}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="line-clamp-2 text-xs font-semibold leading-snug text-zinc-100">
+                                  {rel.title}
+                                </p>
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  {rel.duration > 0 ? formatDuration(rel.duration) : ""}
+                                  {rel.height ? ` • ${rel.height}p` : ""}
+                                  {rel.sizeBytes ? ` • ${formatBytes(rel.sizeBytes)}` : ""}
+                                </p>
+                                {(() => {
+                                  const relGenres = getContentGenresOnly(
+                                    videoGenresMap[rel.id] ?? []
+                                  );
+                                  return relGenres.length > 0 ? (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {relGenres.slice(0, 3).map((g) => (
+                                        <span
+                                          key={g}
+                                          className={`rounded border px-1 py-0.5 text-[9px] font-medium ${getGenreStyle(
+                                            g,
+                                            customGenres
+                                          )}`}
+                                        >
+                                          #{g}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null;
+                                })()}
+                              </div>
+                            </button>
+                            <div className="mt-2 flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => onToggleFavorite(rel.id)}
+                                className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition ${
+                                  userMetaMap[rel.id]?.favorite
+                                    ? "border-rose-500/40 bg-rose-500/20 text-rose-300"
+                                    : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white"
+                                }`}
+                                title="お気に入り切替"
+                              >
+                                <Heart
+                                  className={`h-3 w-3 ${
+                                    userMetaMap[rel.id]?.favorite ? "fill-current" : ""
+                                  }`}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onEditTags(rel)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-semibold text-zinc-300 transition hover:border-rose-500/50 hover:text-white"
+                                title="ジャンル・タグを編集"
+                              >
+                                <Tag className="h-3 w-3" />
+                                <span>ジャンル</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onAddToQueue(rel)}
+                                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                  inQ
+                                    ? "border-indigo-500/40 bg-indigo-500/20 text-indigo-200"
+                                    : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-indigo-500/50 hover:text-indigo-200"
+                                }`}
+                              >
+                                {inQ ? (
+                                  <>
+                                    <ListChecks className="h-3 w-3" />
+                                    キュー追加済み
+                                  </>
+                                ) : (
+                                  <>
+                                    <ListPlus className="h-3 w-3" />
+                                    キューに追加
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+                </div>
+              )}
             </aside>
           )}
         </div>
       </div>
+
+      {/* In-Player Liquid Glass Manga Picker for Simultaneous Video + Manga Split Mode */}
+      {mangaPickerOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-black/70 p-3 backdrop-blur-md sm:items-center"
+          onClick={() => setMangaPickerOpen(false)}
+        >
+          <div
+            className="flex max-h-[80dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/15 bg-zinc-950/90 shadow-2xl backdrop-blur-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <BookOpen className="h-4 w-4 text-amber-400" />
+                <h3 className="text-sm font-bold text-white">動画と同時に読む漫画を選択</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMangaPickerOpen(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-zinc-300 hover:bg-white/20 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="border-b border-white/10 p-3">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                <input
+                  type="text"
+                  value={mangaPickerQuery}
+                  onChange={(e) => setMangaPickerQuery(e.target.value)}
+                  placeholder="漫画タイトルで絞り込み..."
+                  className="w-full rounded-xl border border-white/10 bg-black/50 py-2 pl-8 pr-3 text-xs text-white placeholder-zinc-500 focus:border-amber-400/60 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 space-y-1.5 overflow-y-auto p-3">
+              {linkedManga.length > 0 && !mangaPickerQuery.trim() && (
+                <div className="mb-3 space-y-1.5 rounded-2xl border border-amber-400/30 bg-amber-500/[0.08] p-2.5">
+                  <div className="flex items-center gap-1.5 px-1 text-[11px] font-bold text-amber-200">
+                    <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                    <span>この作品の漫画（セット {linkedManga.length}冊）</span>
+                  </div>
+                  {linkedManga.map((m) => (
+                    <button
+                      key={`linked-manga-${m.id}`}
+                      type="button"
+                      onClick={() => {
+                        onEnableSplitWithManga?.();
+                        setIsMiniMode(true);
+                        onSelectVideo(m);
+                        setMangaPickerOpen(false);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-xl border border-amber-400/25 bg-black/45 p-2 text-left transition hover:border-amber-300/60 hover:bg-black/65"
+                    >
+                      <SmallThumb
+                        video={m}
+                        accessToken={accessToken}
+                        masterKey={masterKey}
+                        thumbVersion={thumbVersions[m.id] ?? 0}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-xs font-semibold text-white">{m.title}</p>
+                        <p className="mt-0.5 font-mono text-[10px] text-amber-200/90">
+                          {m.pageCount ?? m.manifest?.pageCount ?? m.manifest?.pages?.length ?? 0} P
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {pickableManga.length === 0 ? (
+                <p className="py-8 text-center text-xs text-zinc-500">一致する漫画がありません</p>
+              ) : (
+                pickableManga.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      onEnableSplitWithManga?.();
+                      setIsMiniMode(true);
+                      onSelectVideo(m);
+                      setMangaPickerOpen(false);
+                    }}
+                    className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-2 text-left transition hover:border-amber-400/40 hover:bg-white/[0.08]"
+                  >
+                    <SmallThumb video={m} accessToken={accessToken} masterKey={masterKey} />
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 text-xs font-semibold text-zinc-100">{m.title}</p>
+                      <p className="mt-0.5 font-mono text-[10px] text-amber-300/90">
+                        {m.pageCount ?? m.manifest?.pageCount ?? m.manifest?.pages?.length ?? 0} P
+                      </p>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

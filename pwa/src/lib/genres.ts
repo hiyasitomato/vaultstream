@@ -7,6 +7,8 @@ export interface GenreRule {
   keywords: string[];
 }
 
+export const CATEGORY_TAG_SET = new Set(["現実", "アニメ", "漫画"]);
+
 export const GENRE_COLOR_OPTIONS: Array<{
   id: string;
   label: string;
@@ -49,24 +51,34 @@ export function getGenreStyle(
   return found?.color ?? DEFAULT_GENRE_STYLE;
 }
 
-export function extractAutoGenres(video: VaultVideoItem): string[] {
+export function extractAutoGenres(
+  video: VaultVideoItem,
+  allowedCustomGenres?: Set<string>
+): string[] {
   const haystack = `${video.title} ${video.sourceFileName ?? ""}`.toLowerCase();
   const matched = new Set<string>();
 
   if (video.manifest?.genres) {
     for (const g of video.manifest.genres) {
-      if (g.trim()) matched.add(g.trim());
+      const trimmed = g.trim();
+      if (
+        trimmed &&
+        (!allowedCustomGenres ||
+          allowedCustomGenres.has(trimmed) ||
+          CATEGORY_TAG_SET.has(trimmed))
+      ) {
+        matched.add(trimmed);
+      }
     }
   }
 
   for (const rule of GENRE_RULES) {
+    if (allowedCustomGenres && !allowedCustomGenres.has(rule.name)) {
+      continue;
+    }
     if (rule.keywords.some((kw) => haystack.includes(kw.toLowerCase()))) {
       matched.add(rule.name);
     }
-  }
-
-  if ((video.height ?? 0) >= 1080) {
-    matched.add("Full HD+");
   }
 
   return Array.from(matched);
@@ -75,13 +87,18 @@ export function extractAutoGenres(video: VaultVideoItem): string[] {
 export function getEffectiveGenres(
   video: VaultVideoItem,
   userMeta: VideoUserMeta | undefined,
-  useAutoGenres: boolean
+  useAutoGenres: boolean,
+  customGenres?: CustomGenreDef[]
 ): string[] {
   const removed = new Set(userMeta?.removedGenres ?? []);
+  const allowedSet =
+    customGenres && customGenres.length > 0
+      ? new Set(customGenres.map((g) => g.name))
+      : undefined;
   const result = new Set<string>();
 
   if (useAutoGenres) {
-    for (const g of extractAutoGenres(video)) {
+    for (const g of extractAutoGenres(video, allowedSet)) {
       if (!removed.has(g)) {
         result.add(g);
       }
@@ -89,12 +106,17 @@ export function getEffectiveGenres(
   }
 
   for (const g of userMeta?.addedGenres ?? []) {
-    if (g.trim()) {
-      result.add(g.trim());
+    const trimmed = g.trim();
+    if (trimmed && !removed.has(trimmed)) {
+      result.add(trimmed);
     }
   }
 
   return Array.from(result);
+}
+
+export function getContentGenresOnly(genres: string[]): string[] {
+  return genres.filter((g) => !CATEGORY_TAG_SET.has(g));
 }
 
 export function extractSeriesBadge(title: string): string | null {

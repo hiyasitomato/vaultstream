@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-VaultStream All-in-One Packer (E2EE + 360p ABR + 6x6 Storyboard Sprite)
-
-Converts local video file(s) into:
-  - Primary lossless/H.264 HLS stream (AES-128-CBC encrypted)
-  - Optional 360p lightweight ABR fast-start stream (8s segments, ~550kbps)
-  - Thumbnail JPEG (AES-256-GCM encrypted)
-  - 6x6 hover storyboard preview sprite sheet (AES-256-GCM encrypted)
-  - Encrypted manifest & playlist with anonymized random Drive folder names
-  - Automatic library_index.enc invalidation so the PWA sees new videos immediately
-
-Note: FFmpeg and FFprobe must be installed separately on your machine.
+VaultStream Packer (E2EE Supported)
+Convert local video(s) into AES-128 encrypted HLS segments + AES-256-GCM encrypted
+thumbnail / playlist / manifest and upload to Google Drive with anonymized filenames.
 """
 
 from __future__ import annotations
@@ -43,8 +35,6 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".ts", ".flv", ".wmv"}
 CHECK_PLAINTEXT = b"VAULTSTREAM_E2EE_V2"
 PBKDF2_ITERATIONS = 100_000
-LOW_HEIGHT = 360
-LOW_SEGMENT_DURATION = 8
 
 
 def derive_master_key(passphrase: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
@@ -76,7 +66,6 @@ class DriveUploader(Protocol):
     def upload_file(self, file_path: Path, parent_id: str, mime_type: str) -> str: ...
     def find_file_in_folder(self, name: str, parent_id: str) -> Optional[str]: ...
     def download_text(self, file_id: str) -> str: ...
-    def trash_file(self, file_id: str) -> None: ...
 
 
 class GoogleApiUploader:
@@ -90,8 +79,7 @@ class GoogleApiUploader:
         if not credentials_path.exists():
             raise FileNotFoundError(
                 f"OAuth credentials file not found: {credentials_path}\n"
-                "Google Cloud Console からデスクトップアプリ用 OAuth JSON をダウンロードし、"
-                "packer/credentials.json に配置してください。"
+                "Google Cloud Console からデスクトップアプリ用 OAuth JSON をダウンロードして配置してください。"
             )
 
         creds: Optional[Credentials] = None
@@ -155,43 +143,95 @@ class GoogleApiUploader:
         data = service.files().get_media(fileId=file_id).execute()
         return data.decode("utf-8") if isinstance(data, bytes) else str(data)
 
-    def trash_file(self, file_id: str) -> None:
-        service = self._build_service()
-        service.files().update(fileId=file_id, body={"trashed": True}).execute()
 
+class GdriveCliUploader:
+    """Uploads files via an authenticated `gdrive` CLI when available."""
 
-def _win_no_window_kwargs() -> Dict[str, object]:
-    if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
-        return {"creationflags": subprocess.CREATE_NO_WINDOW}
-    return {}
+    def __init__(self) -> None:
+        gdrive_bin = shutil.which("gdrive")
+        if not gdrive_bin:
+            raise RuntimeError("`gdrive` CLI が PATH に見つかりませんでした。")
+        self.gdrive_bin = gdrive_bin
 
+    @staticmethod
+    def _extract_id(stdout: str) -> str:
+        text = stdout.strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for key in ("id", "ID", "fileId", "folderId"):
+                    if key in parsed and parsed[key]:
+                        return str(parsed[key])
+                for value in parsed.values():
+                    if isinstance(value, dict) and "id" in value:
+                        return str(value["id"])
+        except json.JSONDecodeError:
+            pass
+        for pattern in (
+            r'"id"\s*:\s*"([A-Za-z0-9_-]+)"',
+            r"\(ID:\s*([A-Za-z0-9_-]+)\)",
+            r"\bID:\s*([A-Za-z0-9_-]+)",
+        ):
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        raise RuntimeError(f"gdrive CLI の出力からファイル ID を取得できませんでした: {text[:300]}")
 
-def find_ffmpeg_bin(name: str) -> Optional[str]:
-    found = shutil.which(name)
-    if found:
-        return found
-    if sys.platform == "win32":
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        if local_app:
-            winget_link = Path(local_app) / "Microsoft" / "WinGet" / "Links" / f"{name}.exe"
-            if winget_link.exists():
-                return str(winget_link)
-            pkg_root = Path(local_app) / "Microsoft" / "WinGet" / "Packages"
-            if pkg_root.exists():
-                for candidate in pkg_root.glob(f"*FFmpeg*/**/bin/{name}.exe"):
-                    return str(candidate)
-    return None
+    def create_folder(self, name: str, parent_id: str) -> str:
+        cmd = [
+            self.gdrive_bin,
+            "mutate",
+            "mkdir",
+            name,
+            "--parent",
+            parent_id,
+            "--json",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RuntimeError(f"gdrive mkdir failed: {proc.stderr or proc.stdout}")
+        return self._extract_id(proc.stdout)
 
+    def upload_file(self, file_path: Path, parent_id: str, mime_type: str) -> str:
+        cmd = [
+            self.gdrive_bin,
+            "mutate",
+            "upload",
+            str(file_path),
+            "--parent",
+            parent_id,
+            "--mime-type",
+            mime_type,
+            "--json",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RuntimeError(f"gdrive upload failed ({file_path.name}): {proc.stderr or proc.stdout}")
+        return self._extract_id(proc.stdout)
 
-def check_ffmpeg_available() -> None:
-    if not find_ffmpeg_bin("ffmpeg") or not find_ffmpeg_bin("ffprobe"):
-        raise RuntimeError(
-            "ffmpeg または ffprobe が PATH に見つかりません。\n"
-            "FFmpeg をインストールしてから再実行してください。\n"
-            "  Windows: winget install Gyan.FFmpeg\n"
-            "  macOS:   brew install ffmpeg\n"
-            "  Linux:   sudo apt install ffmpeg"
-        )
+    def find_file_in_folder(self, name: str, parent_id: str) -> Optional[str]:
+        cmd = [self.gdrive_bin, "readonly", "ls", parent_id, "--max", "200", "--json"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+        if proc.returncode != 0:
+            return None
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return None
+        items = data if isinstance(data, list) else data.get("files", data.get("items", []))
+        for item in items:
+            if item.get("name") == name or item.get("Name") == name:
+                return str(item.get("id") or item.get("ID"))
+        return None
+
+    def download_text(self, file_id: str) -> str:
+        with tempfile.TemporaryDirectory(prefix="vaultstream_dl_") as tmp:
+            out_file = Path(tmp) / "vault.json"
+            cmd = [self.gdrive_bin, "readonly", "download", file_id, "--out", str(out_file)]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+            if proc.returncode != 0 or not out_file.exists():
+                raise RuntimeError(f"gdrive download failed: {proc.stderr or proc.stdout}")
+            return out_file.read_text(encoding="utf-8")
 
 
 def upload_with_retry(
@@ -257,9 +297,8 @@ def ensure_vault_master_key(
 
 
 def probe_video(input_path: Path) -> Dict[str, object]:
-    ffprobe_bin = find_ffmpeg_bin("ffprobe") or "ffprobe"
     cmd = [
-        ffprobe_bin,
+        "ffprobe",
         "-v",
         "quiet",
         "-print_format",
@@ -268,14 +307,7 @@ def probe_video(input_path: Path) -> Dict[str, object]:
         "-show_streams",
         str(input_path),
     ]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        encoding="utf-8",
-        **_win_no_window_kwargs(),
-    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8")
     data = json.loads(proc.stdout)
 
     duration = float(data.get("format", {}).get("duration", 0.0) or 0.0)
@@ -302,10 +334,9 @@ def probe_video(input_path: Path) -> Dict[str, object]:
 
 
 def generate_thumbnail(input_path: Path, output_path: Path, duration: float) -> bool:
-    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     seek_sec = min(max(duration * 0.1, 1.0), 15.0) if duration > 2.0 else 0.0
     cmd = [
-        ffmpeg_bin,
+        "ffmpeg",
         "-y",
         "-ss",
         f"{seek_sec:.2f}",
@@ -319,22 +350,21 @@ def generate_thumbnail(input_path: Path, output_path: Path, duration: float) -> 
         "3",
         str(output_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return proc.returncode == 0 and output_path.exists()
 
 
 def generate_sprite_sheet(input_path: Path, output_path: Path, duration: float) -> bool:
-    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     safe_dur = max(duration, 1.0)
-    fps_val = 36.0 / safe_dur
+    fps_val = 100.0 / safe_dur
     vf = (
         f"fps={fps_val:.6f},"
         "scale=160:90:force_original_aspect_ratio=decrease,"
         "pad=160:90:(ow-iw)/2:(oh-ih)/2:black,"
-        "tile=6x6"
+        "tile=10x10"
     )
     cmd = [
-        ffmpeg_bin,
+        "ffmpeg",
         "-y",
         "-i",
         str(input_path),
@@ -346,7 +376,7 @@ def generate_sprite_sheet(input_path: Path, output_path: Path, duration: float) 
         "5",
         str(output_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return proc.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
 
 
@@ -358,11 +388,13 @@ def encode_hls(
     copy_streams: bool,
     hls_key: Optional[bytes] = None,
 ) -> Path:
-    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
     playlist_path = out_dir / "index.m3u8"
-    segment_pattern = str(out_dir / ("%04d.enc" if hls_key is not None else "seg_%04d.ts"))
+    if hls_key is not None:
+        segment_pattern = str(out_dir / "%04d.enc")
+    else:
+        segment_pattern = str(out_dir / "seg_%04d.ts")
 
-    cmd = [ffmpeg_bin, "-y", "-i", str(input_path)]
+    cmd = ["ffmpeg", "-y", "-i", str(input_path)]
     if copy_streams:
         cmd += ["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"]
     else:
@@ -415,91 +447,10 @@ def encode_hls(
         str(playlist_path),
     ]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0 or not playlist_path.exists():
         raise RuntimeError(f"FFmpeg HLS 変換に失敗しました:\n{proc.stderr[-1000:]}")
     return playlist_path
-
-
-def encode_low_hls(
-    input_path: Path,
-    out_dir: Path,
-    src_width: int,
-    src_height: int,
-    hls_key: Optional[bytes] = None,
-) -> Tuple[Path, int, int]:
-    ffmpeg_bin = find_ffmpeg_bin("ffmpeg") or "ffmpeg"
-    playlist_path = out_dir / "low.m3u8"
-    segment_pattern = str(out_dir / ("l%04d.enc" if hls_key is not None else "low_%04d.ts"))
-
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        str(input_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-vf",
-        f"scale=-2:{LOW_HEIGHT}",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-maxrate",
-        "550k",
-        "-bufsize",
-        "1100k",
-        "-pix_fmt",
-        "yuv420p",
-        "-g",
-        "60",
-        "-sc_threshold",
-        "0",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-ac",
-        "2",
-        "-f",
-        "hls",
-        "-hls_time",
-        str(LOW_SEGMENT_DURATION),
-        "-hls_playlist_type",
-        "vod",
-        "-hls_flags",
-        "independent_segments",
-    ]
-
-    if hls_key is not None:
-        key_file = out_dir / "low.key"
-        key_file.write_bytes(hls_key)
-        iv_hex = os.urandom(16).hex()
-        keyinfo_file = out_dir / "low_keyinfo.txt"
-        keyinfo_file.write_text(
-            f"vault://key\n{key_file.as_posix()}\n{iv_hex}\n",
-            encoding="utf-8",
-        )
-        cmd += ["-hls_key_info_file", str(keyinfo_file)]
-
-    cmd += [
-        "-hls_segment_filename",
-        segment_pattern,
-        str(playlist_path),
-    ]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_win_no_window_kwargs())
-    if proc.returncode != 0 or not playlist_path.exists():
-        raise RuntimeError(f"FFmpeg 360p 変換に失敗しました:\n{proc.stderr[-800:]}")
-
-    safe_w = src_width or 1280
-    safe_h = src_height or 720
-    low_w = max(2, int(round((safe_w / max(1, safe_h)) * LOW_HEIGHT / 2.0)) * 2)
-    return playlist_path, low_w, LOW_HEIGHT
 
 
 def sanitize_folder_name(title: str) -> str:
@@ -539,16 +490,6 @@ def save_state(state_path: Path, state: Dict[str, Dict[str, str]]) -> None:
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def invalidate_library_index(uploader: DriveUploader, folder_id: str) -> None:
-    try:
-        idx_id = uploader.find_file_in_folder("library_index.enc", folder_id)
-        if idx_id:
-            uploader.trash_file(idx_id)
-            print("[INFO] library_index.enc を自動更新対象にしました。", flush=True)
-    except Exception:
-        pass
-
-
 def process_single_video(
     input_path: Path,
     title: str,
@@ -558,7 +499,6 @@ def process_single_video(
     segment_duration: int,
     crf: int,
     copy_mode: str,
-    with_360p: bool,
     workers: int,
     dry_run: bool,
     delete_source: bool,
@@ -573,14 +513,10 @@ def process_single_video(
 
     can_copy = video_codec == "h264" and audio_codec in ("aac", "mp3", "")
     use_copy = copy_mode == "copy" or (copy_mode == "auto" and can_copy)
-    enable_low = with_360p and (height == 0 or height > LOW_HEIGHT + 60)
-
     mode_label = "copy(無劣化)" if use_copy else "re-encode(H.264/AAC)"
     enc_label = "E2EE暗号化" if encrypted else "平文"
-    abr_label = "+360p高速ABR" if enable_low else "単一画質"
     print(
-        f"  [1/3] {width}x{height} / {duration:.1f}s / {video_codec}+{audio_codec or 'none'} "
-        f"-> {mode_label} [{enc_label} / {abr_label}]",
+        f"  [1/3] {width}x{height} / {duration:.1f}s / {video_codec}+{audio_codec or 'none'} -> {mode_label} [{enc_label}]",
         flush=True,
     )
 
@@ -589,11 +525,9 @@ def process_single_video(
         thumb_path = work_dir / "thumbnail.jpg"
         sprite_path = work_dir / "sprite.jpg"
         hls_key = os.urandom(16) if encrypted else None
-        low_hls_key = os.urandom(16) if (encrypted and enable_low) else None
 
         has_thumb = generate_thumbnail(input_path, thumb_path, duration)
         has_sprite = generate_sprite_sheet(input_path, sprite_path, duration)
-
         try:
             playlist_path = encode_hls(
                 input_path=input_path,
@@ -620,66 +554,45 @@ def process_single_video(
             else:
                 raise
 
-        low_playlist_path: Optional[Path] = None
-        low_w = 0
-        low_h = LOW_HEIGHT
-        if enable_low:
-            low_playlist_path, low_w, low_h = encode_low_hls(
-                input_path=input_path,
-                out_dir=work_dir,
-                src_width=width,
-                src_height=height,
-                hls_key=low_hls_key,
-            )
-
         if encrypted:
             assert master_key is not None and hls_key is not None
             segment_files = sorted(
                 p for p in work_dir.glob("*.enc") if re.match(r"^\d{4}\.enc$", p.name)
             )
-            low_segment_files = (
-                sorted(p for p in work_dir.glob("l*.enc") if re.match(r"^l\d{4}\.enc$", p.name))
-                if low_playlist_path is not None
-                else []
-            )
             enc_playlist_path = work_dir / "p.enc"
-            enc_playlist_path.write_bytes(encrypt_aes_gcm(playlist_path.read_bytes(), master_key))
-
-            enc_low_playlist_path: Optional[Path] = None
-            if low_playlist_path is not None:
-                enc_low_playlist_path = work_dir / "lp.enc"
-                enc_low_playlist_path.write_bytes(
-                    encrypt_aes_gcm(low_playlist_path.read_bytes(), master_key)
-                )
-
+            enc_playlist_path.write_bytes(
+                encrypt_aes_gcm(playlist_path.read_bytes(), master_key)
+            )
             enc_thumb_path = work_dir / "t.enc"
             if has_thumb:
-                enc_thumb_path.write_bytes(encrypt_aes_gcm(thumb_path.read_bytes(), master_key))
-
+                enc_thumb_path.write_bytes(
+                    encrypt_aes_gcm(thumb_path.read_bytes(), master_key)
+                )
             enc_sprite_path = work_dir / "s.enc"
             if has_sprite:
-                enc_sprite_path.write_bytes(encrypt_aes_gcm(sprite_path.read_bytes(), master_key))
+                enc_sprite_path.write_bytes(
+                    encrypt_aes_gcm(sprite_path.read_bytes(), master_key)
+                )
+            total_size = (
+                sum(f.stat().st_size for f in segment_files)
+                + enc_playlist_path.stat().st_size
+                + (enc_thumb_path.stat().st_size if has_thumb else 0)
+                + (enc_sprite_path.stat().st_size if has_sprite else 0)
+            )
         else:
             segment_files = sorted(work_dir.glob("seg_*.ts"))
-            low_segment_files = sorted(work_dir.glob("low_*.ts")) if low_playlist_path else []
             enc_playlist_path = playlist_path
-            enc_low_playlist_path = low_playlist_path
             enc_thumb_path = thumb_path
             enc_sprite_path = sprite_path
-
-        total_size = (
-            sum(f.stat().st_size for f in segment_files)
-            + sum(f.stat().st_size for f in low_segment_files)
-            + enc_playlist_path.stat().st_size
-            + (enc_low_playlist_path.stat().st_size if enc_low_playlist_path else 0)
-            + (enc_thumb_path.stat().st_size if has_thumb else 0)
-            + (enc_sprite_path.stat().st_size if has_sprite else 0)
-        )
+            total_size = (
+                sum(f.stat().st_size for f in segment_files)
+                + playlist_path.stat().st_size
+                + (thumb_path.stat().st_size if has_thumb else 0)
+                + (sprite_path.stat().st_size if has_sprite else 0)
+            )
 
         print(
-            f"  [2/3] 生成完了: メイン {len(segment_files)}本"
-            + (f" + 360p {len(low_segment_files)}本" if low_segment_files else "")
-            + f" / 合計 {total_size / (1024 * 1024):.1f} MB",
+            f"  [2/3] HLS 生成完了: {len(segment_files)} セグメント / {total_size / (1024 * 1024):.1f} MB",
             flush=True,
         )
 
@@ -688,6 +601,7 @@ def process_single_video(
             return {"status": "dry-run"}
 
         if encrypted:
+            # Fully anonymized random hex folder name on Google Drive
             folder_name = secrets.token_hex(8)
         else:
             timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -702,9 +616,6 @@ def process_single_video(
             upload_targets.append(enc_sprite_path)
         upload_targets.extend(segment_files)
         upload_targets.append(enc_playlist_path)
-        if low_segment_files and enc_low_playlist_path is not None:
-            upload_targets.extend(low_segment_files)
-            upload_targets.append(enc_low_playlist_path)
 
         uploaded_ids: Dict[str, str] = {}
 
@@ -737,26 +648,12 @@ def process_single_video(
             "height": height,
             "sizeBytes": total_size,
             "thumbnailFileId": uploaded_ids.get(enc_thumb_path.name),
-            "spriteFileId": uploaded_ids.get(enc_sprite_path.name) if has_sprite else None,
             "playlistFileId": uploaded_ids[enc_playlist_path.name],
             "segments": {seg.name: uploaded_ids[seg.name] for seg in segment_files},
             "sourceFileName": input_path.name,
         }
         if encrypted and hls_key is not None:
             manifest["hlsKeyBase64"] = base64.b64encode(hls_key).decode("ascii")
-
-        if low_segment_files and enc_low_playlist_path is not None:
-            low_variant: Dict[str, object] = {
-                "label": "360p (高速)",
-                "width": low_w,
-                "height": low_h,
-                "bandwidth": 650000,
-                "playlistFileId": uploaded_ids[enc_low_playlist_path.name],
-                "segments": {seg.name: uploaded_ids[seg.name] for seg in low_segment_files},
-            }
-            if encrypted and low_hls_key is not None:
-                low_variant["hlsKeyBase64"] = base64.b64encode(low_hls_key).decode("ascii")
-            manifest["variants"] = [low_variant]
 
         manifest_json_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
         if encrypted:
@@ -792,7 +689,7 @@ def process_single_video(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="動画を暗号化 HLS + 360p ABR + スプライトに変換して Google Drive (VaultStream) へ一括アップロードします。"
+        description="動画を暗号化 HLS に変換して Google Drive (VaultStream) へアップロードします。"
     )
     parser.add_argument("input", help="入力動画ファイルまたはフォルダのパス")
     parser.add_argument("--title", help="動画タイトル（単一ファイル時のみ、省略時はファイル名）")
@@ -809,7 +706,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prompt-password",
         action="store_true",
-        help="パスワードを対話入力する（おすすめ）",
+        help="パスワードを対話入力する",
     )
     parser.add_argument(
         "--credentials",
@@ -824,8 +721,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--segment-duration",
         type=int,
-        default=15,
-        help="メイン HLS セグメント長（秒、デフォルト: 15）",
+        default=8,
+        help="HLS セグメント長（秒、デフォルト: 8）",
     )
     parser.add_argument(
         "--crf",
@@ -841,18 +738,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-copy",
         action="store_true",
-        default=True,
-        help="H.264/AAC の場合は無劣化コピー、非対応形式のみ自動再エンコードする（デフォルト有効）",
-    )
-    parser.add_argument(
-        "--no-auto-copy",
-        action="store_true",
-        help="自動コピーを無効にし、常に H.264/AAC へ再エンコードする",
-    )
-    parser.add_argument(
-        "--no-360p",
-        action="store_true",
-        help="360p 高速スタート画質の自動生成をスキップする",
+        help="H.264/AAC の場合は無劣化コピー、非対応形式のみ自動再エンコードする",
     )
     parser.add_argument(
         "--workers",
@@ -868,7 +754,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--delete-source",
         action="store_true",
-        help="アップロード成功後に元動画ファイルを削除する（デフォルトは残す）",
+        help="全ファイルのアップロード成功後に元動画ファイルを削除する",
+    )
+    parser.add_argument(
+        "--use-gdrive-cli",
+        action="store_true",
+        help="credentials.json の代わりに認証済み gdrive CLI を使用してアップロードする",
     )
     parser.add_argument(
         "--dry-run",
@@ -880,8 +771,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    check_ffmpeg_available()
-
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.exists():
         print(f"[ERROR] パスが見つかりません: {input_path}", file=sys.stderr)
@@ -895,22 +784,18 @@ def main() -> int:
     if args.prompt_password and not passphrase:
         passphrase = getpass.getpass("VaultStream マスターパスワード: ")
 
-    if args.copy_streams:
-        copy_mode = "copy"
-    elif args.no_auto_copy:
-        copy_mode = "reencode"
-    else:
-        copy_mode = "auto"
-
-    with_360p = not args.no_360p
+    copy_mode = "copy" if args.copy_streams else ("auto" if args.auto_copy else "reencode")
 
     uploader: Optional[DriveUploader] = None
     master_key: Optional[bytes] = None
     if not args.dry_run:
-        uploader = GoogleApiUploader(
-            credentials_path=Path(args.credentials).expanduser().resolve(),
-            token_path=Path(args.token).expanduser().resolve(),
-        )
+        if args.use_gdrive_cli:
+            uploader = GdriveCliUploader()
+        else:
+            uploader = GoogleApiUploader(
+                credentials_path=Path(args.credentials).expanduser().resolve(),
+                token_path=Path(args.token).expanduser().resolve(),
+            )
         if passphrase:
             master_key = ensure_vault_master_key(uploader, args.folder_id, passphrase)
     elif passphrase:
@@ -918,7 +803,7 @@ def main() -> int:
 
     if input_path.is_file():
         title = (args.title or input_path.stem).strip()
-        print(f"[1/1] 処理開始: {input_path.name}", flush=True)
+        print(f"[1/1] 処理開始", flush=True)
         process_single_video(
             input_path=input_path,
             title=title,
@@ -928,15 +813,13 @@ def main() -> int:
             segment_duration=args.segment_duration,
             crf=args.crf,
             copy_mode=copy_mode,
-            with_360p=with_360p,
             workers=args.workers,
             dry_run=args.dry_run,
             delete_source=args.delete_source,
         )
-        if uploader is not None:
-            invalidate_library_index(uploader, args.folder_id)
         return 0
 
+    # Directory batch mode
     video_files = sorted(
         p for p in input_path.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
     )
@@ -953,7 +836,7 @@ def main() -> int:
 
     enc_str = "E2EE" if master_key else "PLAIN"
     print(
-        f"=== 一括アップロード開始 ({enc_str}): 全 {total} 本 (workers={args.workers}, mode={copy_mode}, 360p={with_360p}) ===",
+        f"=== 一括アップロード開始 ({enc_str}): 全 {total} 本 (workers={args.workers}, mode={copy_mode}) ===",
         flush=True,
     )
 
@@ -961,10 +844,10 @@ def main() -> int:
         key = f"{vf.name}:{vf.stat().st_size}"
         if not args.dry_run and key in state:
             skip_count += 1
-            print(f"[{idx}/{total}] SKIP (アップロード済): {vf.name}", flush=True)
+            print(f"[{idx}/{total}] SKIP (済)", flush=True)
             continue
 
-        print(f"[{idx}/{total}] 処理中 ({vf.stat().st_size / (1024 * 1024):.1f} MB): {vf.name}", flush=True)
+        print(f"[{idx}/{total}] 処理中 ({vf.stat().st_size / (1024 * 1024):.1f} MB)...", flush=True)
         try:
             result = process_single_video(
                 input_path=vf,
@@ -975,7 +858,6 @@ def main() -> int:
                 segment_duration=args.segment_duration,
                 crf=args.crf,
                 copy_mode=copy_mode,
-                with_360p=with_360p,
                 workers=args.workers,
                 dry_run=args.dry_run,
                 delete_source=args.delete_source,
@@ -987,9 +869,6 @@ def main() -> int:
         except Exception as err:
             print(f"  [ERROR] 失敗: {err}", file=sys.stderr, flush=True)
             fail_list.append((vf.name, str(err)))
-
-    if uploader is not None and done_count > 0:
-        invalidate_library_index(uploader, args.folder_id)
 
     print(
         f"=== 完了サマリー: 成功 {done_count} / スキップ {skip_count} / 失敗 {len(fail_list)} / 合計 {total} ===",

@@ -20,9 +20,7 @@ import type {
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
-export const DRIVE_SCOPE =
-  process.env.NEXT_PUBLIC_DRIVE_SCOPE ||
-  "https://www.googleapis.com/auth/drive.file";
+export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 const SYNC_FILE_NAME = "user_meta.enc";
 const LIBRARY_INDEX_FILE_NAME = "library_index.enc";
@@ -202,40 +200,217 @@ export async function driveFetchText(
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-// Concurrency limiter for thumbnail network fetches to prevent browser connection congestion
+// Priority + LIFO concurrency limiter for thumbnail & storyboard sprite fetches
+// HTTP/2 multiplexing easily handles 12 concurrent small thumbnail streams;
+// LIFO on high/normal guarantees cards the user JUST swiped to jump ahead of scrolled-past cards!
 let activeThumbFetches = 0;
-const MAX_CONCURRENT_THUMB_FETCHES = 6;
-const thumbFetchWaiters: Array<() => void> = [];
+const MAX_CONCURRENT_THUMB_FETCHES = 12;
+const thumbHighWaiters: Array<() => void> = [];
+const thumbNormalWaiters: Array<() => void> = [];
+const thumbLowWaiters: Array<() => void> = [];
 
-function acquireThumbSlot(): Promise<void> {
-  if (activeThumbFetches < MAX_CONCURRENT_THUMB_FETCHES) {
+export type ThumbFetchPriority = "high" | "normal" | "low";
+
+function acquireThumbSlot(priority: ThumbFetchPriority = "normal"): Promise<void> {
+  // Let low-priority background warmers yield when high/normal fetches are waiting
+  const canRunNow =
+    priority === "low"
+      ? activeThumbFetches < Math.max(4, MAX_CONCURRENT_THUMB_FETCHES - 4) &&
+        thumbHighWaiters.length === 0 &&
+        thumbNormalWaiters.length === 0
+      : activeThumbFetches < MAX_CONCURRENT_THUMB_FETCHES;
+
+  if (canRunNow) {
     activeThumbFetches += 1;
     return Promise.resolve();
   }
+
   return new Promise<void>((resolve) => {
-    thumbFetchWaiters.push(() => {
+    const grant = () => {
       activeThumbFetches += 1;
       resolve();
-    });
+    };
+    if (priority === "high") {
+      // LIFO: most recently requested visible card / active video sprite goes first
+      thumbHighWaiters.unshift(grant);
+    } else if (priority === "normal") {
+      // LIFO: newest swipe-ahead cards jump ahead of stale scrolled-past cards
+      thumbNormalWaiters.unshift(grant);
+    } else {
+      thumbLowWaiters.push(grant);
+    }
   });
 }
 
 function releaseThumbSlot(): void {
   activeThumbFetches = Math.max(0, activeThumbFetches - 1);
-  const next = thumbFetchWaiters.shift();
+  const next =
+    thumbHighWaiters.shift() ??
+    thumbNormalWaiters.shift() ??
+    (activeThumbFetches < Math.max(4, MAX_CONCURRENT_THUMB_FETCHES - 4)
+      ? thumbLowWaiters.shift()
+      : undefined);
   if (next) next();
 }
 
 const thumbCache = new Map<string, Promise<string>>();
+const thumbResolvedUrls = new Map<string, string>();
+
+function makeThumbCacheKey(fileId: string, encrypted: boolean, modifiedTime?: string): string {
+  return `${fileId}:${encrypted ? "enc" : "raw"}:${modifiedTime ?? ""}`;
+}
+
+export function getSyncCachedThumbnailUrl(
+  fileId?: string | null,
+  encrypted = false,
+  modifiedTime?: string
+): string | null {
+  if (!fileId) return null;
+  const exact = thumbResolvedUrls.get(makeThumbCacheKey(fileId, encrypted, modifiedTime));
+  if (exact) return exact;
+  if (!modifiedTime) {
+    return thumbResolvedUrls.get(makeThumbCacheKey(fileId, encrypted, "")) ?? null;
+  }
+  return null;
+}
 
 export function clearThumbnailCache(clearDisk = false): void {
   for (const promise of thumbCache.values()) {
     promise.then((url) => URL.revokeObjectURL(url)).catch(() => undefined);
   }
   thumbCache.clear();
+  thumbResolvedUrls.clear();
   if (clearDisk) {
     clearAllThumbDbCache().catch(() => undefined);
   }
+}
+
+// Dedicated high-speed LRU + IndexedDB cache for decrypted manga pages (zero-latency page turns & auto-slide!)
+const MAX_MANGA_PAGE_CACHE = 300;
+const mangaPageCache = new Map<string, Promise<string>>();
+const mangaDecodedSet = new Set<string>();
+
+export function clearMangaPageCache(): void {
+  for (const promise of mangaPageCache.values()) {
+    promise.then((url) => URL.revokeObjectURL(url)).catch(() => undefined);
+  }
+  mangaPageCache.clear();
+  mangaDecodedSet.clear();
+}
+
+export function hasMangaPageCached(fileId: string, encrypted = false): boolean {
+  const key = `${fileId}:${encrypted ? "enc" : "raw"}`;
+  return mangaDecodedSet.has(key);
+}
+
+// Separate dedicated concurrency limiter for manga pages so home-screen thumbnails never block manga loading!
+let activeMangaFetches = 0;
+const MAX_CONCURRENT_MANGA_FETCHES = 8;
+const mangaFetchHighWaiters: Array<() => void> = [];
+const mangaFetchLowWaiters: Array<() => void> = [];
+
+function acquireMangaSlot(priority: "high" | "low"): Promise<void> {
+  if (activeMangaFetches < MAX_CONCURRENT_MANGA_FETCHES) {
+    activeMangaFetches += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const grant = () => {
+      activeMangaFetches += 1;
+      resolve();
+    };
+    if (priority === "high") {
+      mangaFetchHighWaiters.push(grant);
+    } else {
+      mangaFetchLowWaiters.push(grant);
+    }
+  });
+}
+
+function releaseMangaSlot(): void {
+  activeMangaFetches = Math.max(0, activeMangaFetches - 1);
+  const next = mangaFetchHighWaiters.shift() ?? mangaFetchLowWaiters.shift();
+  if (next) next();
+}
+
+export function driveFetchMangaPageUrl(
+  fileId: string,
+  accessToken: string,
+  encrypted = false,
+  masterKey: CryptoKey | null = null,
+  mimeType = "image/jpeg",
+  priority: "high" | "low" = "high"
+): Promise<string> {
+  const key = `${fileId}:${encrypted ? "enc" : "raw"}`;
+  const existing = mangaPageCache.get(key);
+  if (existing) {
+    // Refresh LRU order
+    mangaPageCache.delete(key);
+    mangaPageCache.set(key, existing);
+    return existing;
+  }
+
+  const promise = (async () => {
+    // L2: Check persistent IndexedDB cache first (0ms network!)
+    let bytes = await getCachedThumbBytes(fileId);
+
+    if (!bytes) {
+      await acquireMangaSlot(priority);
+      try {
+        bytes = await driveFetchBytes(fileId, accessToken);
+      } finally {
+        releaseMangaSlot();
+      }
+      // Save encrypted bytes to IndexedDB in background so re-opening this manga is instant!
+      putCachedThumbBytes(fileId, bytes, "").catch(() => undefined);
+    }
+
+    let plainBuf: ArrayBuffer;
+    if (encrypted) {
+      if (!masterKey) {
+        throw new Error("暗号化ページの復号鍵がありません");
+      }
+      const plain = await decryptAesGcmBytes(bytes, masterKey);
+      plainBuf = plain.buffer.slice(
+        plain.byteOffset,
+        plain.byteOffset + plain.byteLength
+      ) as ArrayBuffer;
+    } else {
+      plainBuf = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+    }
+
+    const blobUrl = URL.createObjectURL(new Blob([plainBuf], { type: mimeType || "image/jpeg" }));
+    mangaDecodedSet.add(key);
+
+    // Pre-decode image offscreen so flipping to this page renders in 0ms with zero jank
+    if (typeof Image !== "undefined") {
+      const img = new Image();
+      img.src = blobUrl;
+      if (typeof img.decode === "function") {
+        img.decode().catch(() => undefined);
+      }
+    }
+
+    return blobUrl;
+  })().catch((err) => {
+    mangaPageCache.delete(key);
+    mangaDecodedSet.delete(key);
+    throw err;
+  });
+
+  mangaPageCache.set(key, promise);
+  while (mangaPageCache.size > MAX_MANGA_PAGE_CACHE) {
+    const oldestKey = mangaPageCache.keys().next().value;
+    if (!oldestKey) break;
+    const oldest = mangaPageCache.get(oldestKey);
+    mangaPageCache.delete(oldestKey);
+    mangaDecodedSet.delete(oldestKey);
+    oldest?.then((u) => URL.revokeObjectURL(u)).catch(() => undefined);
+  }
+  return promise;
 }
 
 export function driveFetchCachedThumbnailUrl(
@@ -243,9 +418,10 @@ export function driveFetchCachedThumbnailUrl(
   accessToken: string,
   encrypted = false,
   masterKey: CryptoKey | null = null,
-  modifiedTime?: string
+  modifiedTime?: string,
+  priority: ThumbFetchPriority = "normal"
 ): Promise<string> {
-  const key = `${fileId}:${encrypted ? "enc" : "raw"}`;
+  const key = makeThumbCacheKey(fileId, encrypted, modifiedTime);
   const existing = thumbCache.get(key);
   if (existing) {
     return existing;
@@ -256,7 +432,7 @@ export function driveFetchCachedThumbnailUrl(
     let bytes = await getCachedThumbBytes(fileId, modifiedTime);
 
     if (!bytes) {
-      await acquireThumbSlot();
+      await acquireThumbSlot(priority);
       try {
         bytes = await driveFetchBytes(fileId, accessToken);
       } finally {
@@ -266,25 +442,39 @@ export function driveFetchCachedThumbnailUrl(
       putCachedThumbBytes(fileId, bytes, modifiedTime ?? "").catch(() => undefined);
     }
 
+    let buffer: ArrayBuffer;
     if (encrypted) {
       if (!masterKey) {
         throw new Error("暗号化サムネイルの復号鍵がありません");
       }
       const plain = await decryptAesGcmBytes(bytes, masterKey);
-      const buffer = plain.buffer.slice(
+      buffer = plain.buffer.slice(
         plain.byteOffset,
         plain.byteOffset + plain.byteLength
       ) as ArrayBuffer;
-      return URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
+    } else {
+      buffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
     }
 
-    const buffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength
-    ) as ArrayBuffer;
-    return URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
+    const blobUrl = URL.createObjectURL(new Blob([buffer], { type: "image/jpeg" }));
+    thumbResolvedUrls.set(key, blobUrl);
+
+    // Pre-decode image offscreen so swiping to it paints in 0ms with zero pop-in
+    if (typeof Image !== "undefined") {
+      const img = new Image();
+      img.src = blobUrl;
+      if (typeof img.decode === "function") {
+        img.decode().catch(() => undefined);
+      }
+    }
+
+    return blobUrl;
   })().catch((err) => {
     thumbCache.delete(key);
+    thumbResolvedUrls.delete(key);
     throw err;
   });
 
@@ -297,8 +487,9 @@ export async function updateThumbnailInDrive(
   jpegBytes: Uint8Array,
   accessToken: string,
   encrypted: boolean,
-  masterKey: CryptoKey | null
-): Promise<string> {
+  masterKey: CryptoKey | null,
+  updatedAtIso?: string
+): Promise<{ url: string; updatedAt: string }> {
   let uploadBytes: Uint8Array = jpegBytes;
   if (encrypted) {
     if (!masterKey) {
@@ -331,21 +522,32 @@ export async function updateThumbnailInDrive(
     throw new Error(`サムネイルの保存に失敗しました (${response.status})`);
   }
 
-  // Update both IndexedDB and in-memory cache immediately
-  await putCachedThumbBytes(thumbnailFileId, uploadBytes, new Date().toISOString());
+  const stamp = updatedAtIso || new Date().toISOString();
 
-  const key = `${thumbnailFileId}:${encrypted ? "enc" : "raw"}`;
-  const oldPromise = thumbCache.get(key);
-  if (oldPromise) {
-    oldPromise.then((oldUrl) => URL.revokeObjectURL(oldUrl)).catch(() => undefined);
+  // Update both IndexedDB and in-memory cache immediately
+  await putCachedThumbBytes(thumbnailFileId, uploadBytes, stamp);
+
+  const prefix = `${thumbnailFileId}:${encrypted ? "enc" : "raw"}:`;
+  for (const [k, oldPromise] of Array.from(thumbCache.entries())) {
+    if (k.startsWith(prefix)) {
+      oldPromise.then((oldUrl) => URL.revokeObjectURL(oldUrl)).catch(() => undefined);
+      thumbCache.delete(k);
+      thumbResolvedUrls.delete(k);
+    }
   }
+
   const jpegBuffer = jpegBytes.buffer.slice(
     jpegBytes.byteOffset,
     jpegBytes.byteOffset + jpegBytes.byteLength
   ) as ArrayBuffer;
   const freshUrl = URL.createObjectURL(new Blob([jpegBuffer], { type: "image/jpeg" }));
-  thumbCache.set(key, Promise.resolve(freshUrl));
-  return freshUrl;
+  const stampedKey = makeThumbCacheKey(thumbnailFileId, encrypted, stamp);
+  const baseKey = makeThumbCacheKey(thumbnailFileId, encrypted, "");
+  thumbCache.set(stampedKey, Promise.resolve(freshUrl));
+  thumbResolvedUrls.set(stampedKey, freshUrl);
+  thumbCache.set(baseKey, Promise.resolve(freshUrl));
+  thumbResolvedUrls.set(baseKey, freshUrl);
+  return { url: freshUrl, updatedAt: stamp };
 }
 
 export async function driveFetchBlobUrl(
@@ -389,23 +591,20 @@ export async function driveFetchBlobUrl(
 
 export async function createDriveFolder(
   name: string,
-  parentId: string | null,
+  parentId: string,
   accessToken: string
 ): Promise<string> {
-  const body: Record<string, unknown> = {
-    name,
-    mimeType: "application/vnd.google-apps.folder",
-  };
-  if (parentId) {
-    body.parents = [parentId];
-  }
   const response = await fetch(`${DRIVE_API_BASE}/files?fields=id`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json; charset=UTF-8",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: [parentId],
+    }),
   });
   if (response.status === 401) throw new Error("AUTH_EXPIRED");
   if (!response.ok) {
@@ -413,28 +612,6 @@ export async function createDriveFolder(
   }
   const data = (await response.json()) as { id: string };
   return data.id;
-}
-
-export async function ensureVaultRootFolder(
-  accessToken: string,
-  folderName = "VaultStream"
-): Promise<string> {
-  const escaped = folderName.replace(/'/g, "\\'");
-  const query = `mimeType = 'application/vnd.google-apps.folder' and name = '${escaped}' and trashed = false`;
-  const params = new URLSearchParams({
-    q: query,
-    fields: "files(id, name, createdTime)",
-    pageSize: "5",
-    orderBy: "createdTime asc",
-  });
-  const data = await driveFetchJson<{ files?: DriveFileEntry[] }>(
-    `${DRIVE_API_BASE}/files?${params.toString()}`,
-    accessToken
-  );
-  if (data.files && data.files.length > 0) {
-    return data.files[0].id;
-  }
-  return createDriveFolder(folderName, null, accessToken);
 }
 
 export async function saveVaultConfigToDrive(
@@ -768,7 +945,10 @@ export async function fetchVaultVideosFast(
     );
     if (indexedItems) {
       for (const item of indexedItems) {
-        if (item.folderId && (item.kind === "hls" || item.manifest?.directFileId)) {
+        if (
+          item.folderId &&
+          (item.kind === "hls" || item.kind === "manga" || item.manifest?.directFileId)
+        ) {
           indexedByFolderId.set(item.folderId, item);
         }
       }
@@ -805,8 +985,46 @@ export async function fetchVaultVideosFast(
             return null;
           }
 
-          if (!manifest?.playlistFileId && !manifest?.directFileId) {
+          const isManga =
+            manifest?.kind === "manga" ||
+            (Array.isArray(manifest?.pages) && manifest.pages.length > 0);
+
+          if (!isManga && !manifest?.playlistFileId && !manifest?.directFileId) {
             return null;
+          }
+
+          if (isManga) {
+            const thumbEntry = files.find((f) =>
+              isEncrypted
+                ? f.name === "t.enc"
+                : f.name === "thumbnail.jpg" || f.name === "thumb.jpg"
+            );
+            const pages = manifest.pages ?? [];
+            const thumbFileId =
+              manifest.thumbnailFileId || thumbEntry?.id || pages[0]?.fileId;
+            return {
+              id: manifest.id || folder.id,
+              folderId: folder.id,
+              title: manifest.title || folder.name,
+              createdAt:
+                manifest.createdAt || folder.createdTime || new Date().toISOString(),
+              duration: 0,
+              sizeBytes: manifest.sizeBytes,
+              kind: "manga",
+              encrypted: isEncrypted,
+              manifest: {
+                ...manifest,
+                kind: "manga",
+                encrypted: isEncrypted,
+                thumbnailFileId: thumbFileId,
+                pageCount: manifest.pageCount ?? pages.length,
+                pages,
+              },
+              thumbnailFileId: thumbFileId,
+              thumbnailModifiedTime: thumbEntry?.modifiedTime,
+              pageCount: manifest.pageCount ?? pages.length,
+              sourceFileName: manifest.sourceFileName || folder.name,
+            };
           }
 
           const isDirectPackaged = !manifest.playlistFileId && Boolean(manifest.directFileId);

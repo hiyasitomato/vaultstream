@@ -2,7 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { Check, Plus, Tag, X } from "lucide-react";
-import { GENRE_COLOR_OPTIONS, GENRE_RULES, getGenreStyle } from "@/lib/genres";
+import {
+  CATEGORY_TAG_SET,
+  GENRE_COLOR_OPTIONS,
+  getGenreStyle,
+} from "@/lib/genres";
 import type { CustomGenreDef, VaultVideoItem } from "@/lib/types";
 
 interface TagEditorModalProps {
@@ -26,28 +30,21 @@ export default function TagEditorModal({
   const [selectedColor, setSelectedColor] = useState("rose");
   const activeSet = new Set(currentGenres);
 
-  // Merge user custom genres, preset genres, and any active genres into a single flat list
+  const categoryTags = ["現実", "アニメ", "漫画"];
+
+  // Unified strictly to the user's 作成済みマイジャンル (+ any already-attached tag on this item)
   const unifiedGenres = useMemo(() => {
     const seen = new Set<string>();
     const list: string[] = [];
-    for (const g of customGenres) {
-      if (g.name && !seen.has(g.name)) {
-        seen.add(g.name);
-        list.push(g.name);
+    const add = (raw: string) => {
+      const trimmed = raw.trim();
+      if (trimmed && !CATEGORY_TAG_SET.has(trimmed) && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        list.push(trimmed);
       }
-    }
-    for (const rule of GENRE_RULES) {
-      if (rule.name && !seen.has(rule.name)) {
-        seen.add(rule.name);
-        list.push(rule.name);
-      }
-    }
-    for (const g of currentGenres) {
-      if (g && !seen.has(g)) {
-        seen.add(g);
-        list.push(g);
-      }
-    }
+    };
+    for (const g of customGenres) add(g.name);
+    for (const g of currentGenres) add(g);
     return list;
   }, [customGenres, currentGenres]);
 
@@ -122,37 +119,58 @@ export default function TagEditorModal({
             </div>
           </form>
 
+          {/* Top-level Category Switcher (現実 / アニメ / 漫画) */}
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              カテゴリ（タブ分類）
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {categoryTags.map((cat) => {
+                const selected = activeSet.has(cat);
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => onToggleGenre(video.id, cat)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                      selected
+                        ? `${getGenreStyle(cat, customGenres)} ring-1 ring-white/30`
+                        : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                    }`}
+                  >
+                    {selected && <Check className="h-3 w-3" />}
+                    {cat}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Unified genre list (always open, 1-tap toggle) */}
           <div>
             <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-300">
               ジャンル一覧（タップで ON / OFF）
             </h3>
-            {unifiedGenres.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-zinc-800 px-4 py-4 text-center text-xs text-zinc-500">
-                まだジャンルがありません。上の入力欄から好きなジャンルを作成してください。
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {unifiedGenres.map((genre) => {
-                  const selected = activeSet.has(genre);
-                  return (
-                    <button
-                      key={genre}
-                      type="button"
-                      onClick={() => onToggleGenre(video.id, genre)}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                        selected
-                          ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
-                          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                      }`}
-                    >
-                      {selected && <Check className="h-3.5 w-3.5" />}
-                      #{genre}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {unifiedGenres.map((genre) => {
+                const selected = activeSet.has(genre);
+                return (
+                  <button
+                    key={genre}
+                    type="button"
+                    onClick={() => onToggleGenre(video.id, genre)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                      selected
+                        ? `${getGenreStyle(genre, customGenres)} ring-1 ring-white/30`
+                        : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                    }`}
+                  >
+                    {selected && <Check className="h-3.5 w-3.5" />}
+                    #{genre}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
