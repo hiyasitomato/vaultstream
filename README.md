@@ -55,6 +55,7 @@ Many people hesitate to store personal videos on Google Drive due to privacy con
 - **Built-in Smartphone / Browser E2EE Uploader (Zero PC Needed)**: Select videos directly from iPhone Photos or Android Gallery — VaultStream automatically generates the encrypted thumbnail, 6×6 hover sprite, and AES-256-GCM encrypted video right inside your browser and uploads straight to your Google Drive.
 - Unified YouTube-style custom player (auto-hide HUD, PiP, "Back to Home" mini-player that keeps playing, ±10s skip, speed control, keyboard shortcuts).
 - **1-Click Thumbnail Capture & Timestamp Jump**: Capture any frame as the video's encrypted thumbnail; click the `📷 mm:ss` badge on any card or the seek bar marker to jump directly to that scene.
+- **External Site URL Player, Downloader & E2EE Vault Saver**: Paste any external video URL (YouTube, X/Twitter, TikTok, Reddit, Vimeo, Dailymotion, or direct `.mp4` / `.m3u8` links) into **URL再生・DL** or the search bar to stream inside VaultStream, download MP4/merged HLS to your device, or encrypt & save directly to Google Drive (`pwa/functions/api/extract.ts`, `pwa/functions/api/proxy.ts`, plus optional local `packer/url_server.py` powered by `yt-dlp`).
 - Playback queue (reorder, shuffle, auto-play next, MediaSession controls).
 - **Custom Genres, Grouped Tag Bar & AND/OR Filtering**: Organize genres into collapsible groups, switch Tag AND/OR matching right on the home bar, bulk-tag items, and sync encrypted settings across devices (`user_meta.enc`).
 

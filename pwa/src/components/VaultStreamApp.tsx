@@ -15,6 +15,7 @@ import {
   Film,
   FolderOpen,
   FolderPlus,
+  Globe,
   Grid,
   HardDrive,
   Hash,
@@ -141,6 +142,8 @@ import type {
   VideoUserMeta,
   ViewMode,
 } from "@/lib/types";
+import { isLikelyExternalUrlInput } from "@/lib/externalVideo";
+import ExternalUrlModal from "./ExternalUrlModal";
 import MangaReaderModal from "./MangaReaderModal";
 import TagEditorModal from "./TagEditorModal";
 import UploadVideoModal from "./UploadVideoModal";
@@ -454,6 +457,12 @@ export default function VaultStreamApp() {
   const [queueToast, setQueueToast] = useState<string | null>(null);
   const [editingTagsVideo, setEditingTagsVideo] = useState<VaultVideoItem | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [externalUrlModalOpen, setExternalUrlModalOpen] = useState(false);
+  const [initialExternalUrl, setInitialExternalUrl] = useState("");
+  const openExternalUrlModal = useCallback((url = "") => {
+    setInitialExternalUrl(url);
+    setExternalUrlModalOpen(true);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftClientId, setDraftClientId] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
@@ -3204,9 +3213,26 @@ export default function VaultStreamApp() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="タイトル・ファイル名・ジャンルで検索（例: ワード1 ワード2 -除外）"
-                  className="w-full rounded-full border border-zinc-800 bg-zinc-900/90 py-2 pl-10 pr-9 text-xs text-zinc-100 placeholder-zinc-500 transition focus:border-rose-500/70 focus:bg-zinc-900 focus:outline-none sm:text-sm"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && isLikelyExternalUrlInput(searchQuery)) {
+                      e.preventDefault();
+                      openExternalUrlModal(searchQuery.trim());
+                    }
+                  }}
+                  placeholder="タイトル・タグ検索、または動画URL (https://...) を貼ってEnter"
+                  className="w-full rounded-full border border-zinc-800 bg-zinc-900/90 py-2 pl-10 pr-28 text-xs text-zinc-100 placeholder-zinc-500 transition focus:border-rose-500/70 focus:bg-zinc-900 focus:outline-none sm:text-sm"
                 />
+                {isLikelyExternalUrlInput(searchQuery) && (
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrlModal(searchQuery.trim())}
+                    className="absolute right-9 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 rounded-full bg-rose-600 px-2.5 py-1 text-[10px] font-bold text-white shadow hover:bg-rose-500"
+                    title="外部URLをプレーヤーで開く"
+                  >
+                    <Globe className="h-3 w-3" />
+                    <span>URL再生</span>
+                  </button>
+                )}
                 {searchQuery && (
                   <button
                     type="button"
@@ -3252,6 +3278,16 @@ export default function VaultStreamApp() {
                     : "ローカル保存"}
               </span>
             )}
+
+            <button
+              type="button"
+              onClick={() => openExternalUrlModal()}
+              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-sky-500/40 bg-sky-500/15 px-3 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/25"
+              title="外部動画サイトの URL を貼って再生・ダウンロード・Drive 保存"
+            >
+              <Globe className="h-3.5 w-3.5 text-sky-400" />
+              <span className="hidden sm:inline">URL再生・DL</span>
+            </button>
 
             {accessToken && (!vaultConfig || masterKey) && (
               <button
@@ -3646,6 +3682,20 @@ export default function VaultStreamApp() {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => openExternalUrlModal()}
+                className={`flex w-full items-center rounded-xl text-sky-300 transition hover:bg-sky-500/15 hover:text-sky-200 ${
+                  sidebarExpanded
+                    ? "justify-between px-3 py-2.5 text-sm"
+                    : "flex-col justify-center gap-1 px-1 py-2.5 text-[10px]"
+                }`}
+              >
+                <span className={`flex items-center ${sidebarExpanded ? "gap-3" : "flex-col gap-1"}`}>
+                  <Globe className="h-5 w-5 text-sky-400" />
+                  <span>URL再生・DL</span>
+                </span>
+              </button>
             </nav>
 
             {/* User's genres quick list in sidebar */}
@@ -4948,6 +4998,23 @@ export default function VaultStreamApp() {
           onUploaded={handleVideosUploaded}
           onAuthExpired={handleAuthExpired}
           onClose={() => setUploadModalOpen(false)}
+        />
+      )}
+
+      {/* External Video Site URL Player, Downloader & E2EE Vault Importer */}
+      {externalUrlModalOpen && (
+        <ExternalUrlModal
+          initialUrl={initialExternalUrl}
+          accessToken={accessToken}
+          rootFolderId={folderId.trim()}
+          vaultConfig={vaultConfig}
+          masterKey={masterKey}
+          onVaultInitialized={(cfg, key) => {
+            setVaultConfig(cfg);
+            setMasterKey(key);
+          }}
+          onVideoSavedToVault={(item) => handleVideosUploaded([item])}
+          onClose={() => setExternalUrlModalOpen(false)}
         />
       )}
 
