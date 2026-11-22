@@ -81,9 +81,9 @@ Many people hesitate to store personal videos on Google Drive due to privacy con
 
 ### 📱 Fastest Path: Smartphone / Browser Only (With Built-in Google Cloud & Drive Auto-Setup!)
 1. Open **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** on your iPhone / Android / iPad / PC (and add to Home Screen as a PWA).
-2. Expand **Google Cloud & Drive Auto-Setup** directly on the login screen:
-   - **1-Command Cloud Shell Provisioning**: Click **"Copy command & open Cloud Shell"** and paste into Google Cloud Shell to auto-create/select a project, enable `drive.googleapis.com`, and generate a 1-tap `#autoconfig` return URL.
-   - **OAuth JSON Drag & Drop / Auto-Paste**: Drop your downloaded `client_secret_*.json` anywhere in the wizard (or copy your Client ID and press `Ctrl+V` / use clipboard auto-read), plus 1-click origin copying.
+2. Expand **Google Cloud & Drive Auto-Setup** directly on the login screen for the streamlined **1-Command Cloud Shell Auto-Setup** flow:
+   - **1-Command Cloud Shell Provisioning**: Click **"Copy command & open Cloud Shell"** (with a 1-click Origin copy button and command preview right inside the card) and paste into Google Cloud Shell — it auto-detects your active Gmail account, creates/selects a `vaultstream-*` GCP project, enables `drive.googleapis.com`, prints direct project-scoped links, and generates a 1-tap `#autoconfig` return URL.
+   - **OAuth JSON Drag & Drop / Auto-Paste**: Open the `#autoconfig` link, drop your `client_secret_*.json` into the wizard, or copy the Client ID and press `Ctrl+V` / click clipboard auto-read to fill everything without manual typing.
    - **Automatic Google Drive Vault Folder Creation**: Leave the Drive Folder ID blank and sign in — VaultStream automatically finds or creates a private `VaultStream-Vault` folder in your Drive.
    - **1-Tap Multi-Device Setup Link (`#autoconfig=...`)**: Copy the setup link after configuring on desktop and open it on your iPhone/iPad to sync Client ID & Folder ID in 1 tap.
 3. Tap **Upload** to encrypt & upload videos straight from your camera roll! *(Your data talks directly between your browser and your own Google Drive — nothing ever touches any third-party server.)*

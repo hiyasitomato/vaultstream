@@ -1267,34 +1267,34 @@ export default function VaultStreamApp() {
     }
   }, [currentOrigin, showQueueToast]);
 
-  const handleCopyCloudShellCommand = useCallback(async () => {
+  const cloudShellCommand = useMemo(() => {
     const origin = currentOrigin || "https://hiyasitomato.github.io";
     const appUrl = currentAppUrl || "https://hiyasitomato.github.io/vaultstream/";
-    const cmd = [
+    return [
+      "ACCT=$(gcloud config get-value account 2>/dev/null)",
       'PID=$(gcloud projects list --filter="projectId:vaultstream-*" --format="value(projectId)" --limit=1)',
-      '{ [ -n "$PID" ] || { PID="vaultstream-$(date +%s | tail -c 6)" && gcloud projects create "$PID" --name="VaultStream"; }; }',
-      'gcloud config set project "$PID" && gcloud services enable drive.googleapis.com',
-      'echo "" && echo "✅ Drive API 自動有効化完了 (Project: $PID)"',
-      'echo "1. テストユーザーに自分のGmailを追加:"',
-      'echo "   https://console.cloud.google.com/auth/audience?project=$PID"',
-      `echo "2. 承認済みJS生成元に [${origin}] を入力してWebクライアント作成:"`,
-      'echo "   https://console.cloud.google.com/auth/clients/create?project=$PID"',
-      'read -rp "3. 作成したクライアントIDを貼り付けてEnter: " CID',
-      'B64=$(printf \'{"c":"%s"}\' "$CID" | base64 | tr -d \'\\n\')',
-      `echo "🎉 完了！このリンクを開くと自動設定されます: ${appUrl}#autoconfig=$B64"`,
-    ].join(" && ");
+      '{ [ -n "$PID" ] || { PID="vaultstream-$(date +%s | tail -c 6)" && gcloud projects create "$PID" --name="VaultStream"; }; } && gcloud config set project "$PID" && gcloud services enable drive.googleapis.com && echo "" && echo "✅ 準備完了 (Project: $PID / Account: $ACCT)" && echo "1. テストユーザーに [$ACCT] を追加: https://console.cloud.google.com/auth/audience?project=$PID" && echo "2. 承認済みJS生成元に [' +
+        origin +
+        '] を入力してWebクライアント作成: https://console.cloud.google.com/auth/clients/create?project=$PID" && read -rp "3. 作成したクライアントIDを貼り付けてEnter: " CID && CID=$(echo "$CID" | xargs) && B64=$(printf \'{"c":"%s"}\' "$CID" | base64 | tr -d \'\\n\') && echo "🎉 このリンクを開くと自動設定されます: ' +
+        appUrl +
+        '#autoconfig=$B64"',
+    ].join("; ");
+  }, [currentAppUrl, currentOrigin]);
 
+  const handleCopyCloudShellCommand = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(cmd);
+      await navigator.clipboard.writeText(cloudShellCommand);
       setSetupWizardNotice(
         "Cloud Shell 自動セットアップコマンドをコピーしました！開いたターミナルに貼り付けて Enter を押すだけでプロジェクト作成＆Drive API有効化＆自動設定リンク生成まで一括で進みます。"
       );
       showQueueToast("Cloud Shell コマンドをコピーしました！");
     } catch {
-      setSetupWizardNotice("Cloud Shell を開きました。Google Cloud コンソールの各ステップボタンでも設定できます。");
+      setSetupWizardNotice(
+        "Cloud Shell を開きました。下の自動構築コマンドをコピーして貼り付け、Enter を押してください。"
+      );
     }
     window.open("https://shell.cloud.google.com/?show=terminal", "_blank", "noopener,noreferrer");
-  }, [currentAppUrl, currentOrigin, showQueueToast]);
+  }, [cloudShellCommand, showQueueToast]);
 
   const copyAutoConfigLink = useCallback(
     async (rawClientId: string, rawFolderId: string) => {
@@ -3459,79 +3459,41 @@ export default function VaultStreamApp() {
                   </div>
                 </div>
 
-                {/* Method 1: Cloud Shell 1-Command Auto Setup */}
-                <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 p-3.5">
+                {/* Cloud Shell 1-Command Auto Setup */}
+                <div className="rounded-xl border border-sky-500/35 bg-sky-950/25 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-sky-200">
-                      方法A: Cloud Shell で 1コマンド自動構築（最速・おすすめ）
+                    <span className="text-xs font-bold text-sky-200">
+                      Cloud Shell 1コマンド自動セットアップ
                     </span>
-                    <button
-                      type="button"
-                      onClick={handleCopyCloudShellCommand}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
-                    >
-                      <Terminal className="h-3.5 w-3.5" />
-                      <span>自動コマンドをコピーして Cloud Shell を開く</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </button>
-                  </div>
-                  <p className="mt-1.5 text-[11px] text-zinc-400">
-                    開いたターミナルにコマンドを貼り付けて Enter を押すと、プロジェクト作成・Drive API 有効化・専用設定 URL の発行まで自動で進みます。
-                  </p>
-                </div>
-
-                {/* Method 2: 3-Click Console Guided Setup */}
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3.5">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-zinc-200">
-                      方法B: 3ステップ個別設定リンク（必要な設定だけ開く）
-                    </span>
-                    {currentOrigin && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {currentOrigin && (
+                        <button
+                          type="button"
+                          onClick={handleCopyCurrentOrigin}
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 font-mono text-[10px] text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+                          title="承認済みの JavaScript 生成元用 URL をコピー"
+                        >
+                          <Copy className="h-3 w-3 text-rose-400" />
+                          <span>生成元コピー: {currentOrigin}</span>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={handleCopyCurrentOrigin}
-                        className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+                        onClick={handleCopyCloudShellCommand}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
                       >
-                        <Copy className="h-3 w-3 text-rose-400" />
-                        <span>生成元コピー: {currentOrigin}</span>
+                        <Terminal className="h-3.5 w-3.5" />
+                        <span>コマンドをコピーして Cloud Shell を開く</span>
+                        <ExternalLink className="h-3 w-3" />
                       </button>
-                    )}
+                    </div>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <a
-                      href="https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
-                    >
-                      <span>1. Drive API 有効化</span>
-                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
-                    </a>
-                    <a
-                      href="https://console.cloud.google.com/auth/audience"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
-                    >
-                      <span>2. テストユーザー追加</span>
-                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
-                    </a>
-                    <a
-                      href="https://console.cloud.google.com/auth/clients/create"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => {
-                        void handleCopyCurrentOrigin();
-                      }}
-                      className="flex items-center justify-between gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-zinc-200 transition hover:border-rose-500/40 hover:text-white"
-                    >
-                      <span>3. クライアント作成</span>
-                      <ExternalLink className="h-3 w-3 shrink-0 text-zinc-400" />
-                    </a>
-                  </div>
-                  <p className="mt-1.5 text-[10px] text-zinc-500">
-                    ※「3. クライアント作成」は種類で「ウェブ アプリケーション」を選び、「承認済みの JavaScript 生成元」に自動コピーされた URL を貼り付けてください。
+                  <p className="mt-2 text-[11px] leading-relaxed text-zinc-300">
+                    ボタンを押して開いたターミナルへ貼り付け→ <strong className="text-white">Enter</strong> を押すだけで、Gmail アカウント取得・GCP プロジェクト作成・Google Drive API 有効化・専用設定リンク発行まで一気に進みます。
                   </p>
+                  <div className="mt-2.5 max-h-20 overflow-y-auto rounded-lg border border-zinc-800/90 bg-zinc-950/90 p-2 font-mono text-[10px] leading-relaxed text-zinc-400 select-all">
+                    {cloudShellCommand}
+                  </div>
                 </div>
 
                 {/* Auto-Import Zone: OAuth JSON Drop / Clipboard Auto-Read */}

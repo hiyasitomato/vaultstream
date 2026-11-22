@@ -49,9 +49,9 @@ Cloudflare Pages の無料枠に静的フロントエンド（PWA）を置くだ
 
 ### 📱 一番かんたん：スマホ・ブラウザだけで完結（サイト内自動セットアップ対応！）
 1. スマホ・iPad・PC で **[https://hiyasitomato.github.io/vaultstream/](https://hiyasitomato.github.io/vaultstream/)** を開きます（Safari の「共有 → ホーム画面に追加」でアプリ化できます）。
-2. ログイン画面にある **「Google Cloud ＆ Drive 自動セットアップ（初回のみ）」** を開くと、以下の機能で設定をほぼ自動化できます：
-   - **Cloud Shell で 1コマンド自動構築**：ボタン 1 つでコマンドをコピー＆Google Cloud Shell を開き、貼り付けて Enter を押すだけでプロジェクト作成・Google Drive API 有効化・専用設定リンク生成まで自動進行。
-   - **OAuth JSON 自動読込 ＆ Ctrl+V 自動認識**：Google Cloud で作成した `client_secret_*.json` を画面へドラッグ＆ドロップ（または ID をコピーして Ctrl+V／クリップボード読込）するだけで自動反映。Origin URL のワンクリックコピー機能も内蔵。
+2. ログイン画面にある **「Google Cloud ＆ Drive 自動セットアップ（初回のみ）」** を開くと、**Cloud Shell 1コマンド一本化フロー**でほぼ全自動設定できます：
+   - **Cloud Shell で 1コマンド自動構築**：ボタン 1 つでコマンドをコピー＆Google Cloud Shell を開き、貼り付けて Enter を押すだけで「ログイン中 Gmail の自動取得 → GCP プロジェクト自動作成/選択 → Google Drive API 自動有効化 → OAuth 設定 URL 表示 → 専用 `#autoconfig` 自動設定リンク発行」まで一貫して完了します（生成元 URL コピーもボタン 1 つで可能）。
+   - **OAuth JSON 自動読込 ＆ Ctrl+V 自動認識**：作成した `client_secret_*.json` を画面へドラッグ＆ドロップ（または発行リンクを開く／クライアント ID をコピーして Ctrl+V／クリップボード読込）するだけで自動反映。
    - **Google Drive 専用フォルダ自動作成・自動検出**：フォルダ ID は空欄のままログインするだけで、あなたのマイドライブ上に専用フォルダ `VaultStream-Vault` を自動検出または自動作成します。
    - **他端末用 1タップ自動設定リンク（`#autoconfig=...`）**：PC で設定後、「他端末用設定リンクをコピー」を iPhone/iPad で開くだけで設定が即引き継がれます。
 3. 右上の **「アップロード」ボタン** から、iPhone の写真ライブラリや Android のギャラリーの動画をそのまま端末内で完全暗号化（AES-256-GCM＋サムネ＋6×6 プレビュー自動生成）して Google Drive へ直接アップロード＆再生できます！
