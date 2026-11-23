@@ -2311,23 +2311,15 @@ export default function VideoPlayerModal({
         isSplitDocked
           ? "fixed inset-x-0 top-0 z-[55] flex h-[34dvh] flex-col overflow-hidden border-b border-white/15 bg-[#060609] shadow-2xl shadow-black/90 lg:inset-y-0 lg:left-0 lg:right-auto lg:h-[100dvh] lg:w-[42vw] lg:justify-center lg:border-b-0 lg:border-r lg:border-white/15"
           : isMiniMode
-            ? "fixed bottom-16 right-3 z-[55] w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 transition-all duration-200 sm:w-[340px] md:bottom-5 md:right-5"
-            : "yt-sheet-in fixed inset-0 z-[55] flex flex-col bg-[#0b0b0e]"
+            ? "fixed bottom-16 right-3 z-[55] w-[290px] overflow-hidden rounded-2xl border border-zinc-700/90 bg-zinc-950 shadow-2xl shadow-black/90 sm:w-[340px] md:bottom-5 md:right-5"
+            : "fixed inset-0 z-[55] flex flex-col bg-[#0b0b0e]"
       }
       style={
-        !isMiniMode && !anyFullscreen
+        !isMiniMode && !anyFullscreen && dragOffsetY > 0
           ? {
               backgroundColor: `rgba(11, 11, 14, ${sheetDragOpacity.toFixed(2)})`,
-              transform:
-                dragOffsetY > 0
-                  ? `translate3d(0, ${dragOffsetY}px, 0) scale(${(1 - Math.min(0.08, dragOffsetY / 2200)).toFixed(4)})`
-                  : undefined,
-              borderRadius: dragOffsetY > 12 ? "20px" : undefined,
-              transition:
-                dragOffsetY !== 0
-                  ? "none"
-                  : "transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease",
-              willChange: dragOffsetY !== 0 ? "transform" : undefined,
+              transform: `translate3d(0, ${dragOffsetY}px, 0)`,
+              willChange: "transform",
             }
           : undefined
       }
@@ -2409,7 +2401,7 @@ export default function VideoPlayerModal({
             ? "flex min-h-0 flex-1 flex-col lg:flex-initial"
             : isMiniMode
               ? "flex flex-col"
-              : "flex-1 overflow-y-auto"
+              : "min-h-0 flex-1 overflow-y-auto lg:overflow-hidden"
         }
       >
         <div
@@ -2418,7 +2410,7 @@ export default function VideoPlayerModal({
               ? "flex min-h-0 flex-1 flex-col lg:flex-initial"
               : isMiniMode
                 ? "flex flex-col"
-                : "mx-auto flex max-w-[1600px] flex-col gap-6 px-3 py-4 sm:px-5 lg:flex-row lg:items-start"
+                : "mx-auto flex max-w-[1600px] flex-col gap-6 px-3 py-4 sm:px-5 lg:h-full lg:flex-row lg:items-stretch"
           }
         >
           {/* LEFT MAIN COLUMN: Video + Meta/Controls + Below-Video Search & Browse Feed */}
@@ -2428,7 +2420,7 @@ export default function VideoPlayerModal({
                 ? "flex min-h-0 w-full flex-1 flex-col lg:flex-initial"
                 : isMiniMode
                   ? "w-full"
-                  : "min-w-0 flex-1"
+                  : "min-w-0 flex-1 lg:h-full lg:overflow-y-auto lg:pr-1"
             }
           >
             {/* Custom Unified YouTube-style Video Player Container */}
@@ -2505,10 +2497,12 @@ export default function VideoPlayerModal({
                     suppressNextVideoClickRef.current = false;
                     return;
                   }
-                  handleTogglePlayPause();
-                  if (!isMiniMode) {
-                    bumpControlsVisibility();
+                  if (isMiniMode) {
+                    setIsMiniMode(false);
+                    return;
                   }
+                  handleTogglePlayPause();
+                  bumpControlsVisibility();
                 }}
                 onDoubleClick={() => {
                   if (performance.now() - lastTouchEndAtRef.current < 450) return;
@@ -3860,7 +3854,7 @@ export default function VideoPlayerModal({
 
           {/* RIGHT SIDEBAR (YouTube Watch-Page Queue + Up Next) */}
           {!isMiniMode && (
-            <aside className="flex w-full shrink-0 flex-col gap-5 lg:sticky lg:top-4 lg:w-[360px] xl:w-[400px]">
+            <aside className="flex w-full shrink-0 flex-col gap-5 lg:h-full lg:w-[360px] lg:overflow-y-auto lg:pr-1 xl:w-[400px]">
               {/* Queue Box */}
               <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950">
                 <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/60 px-4 py-3">
@@ -3893,7 +3887,7 @@ export default function VideoPlayerModal({
                   )}
                 </div>
 
-                <div className="max-h-[340px] space-y-1.5 overflow-y-auto p-2.5">
+                <div className="max-h-[340px] space-y-1.5 overflow-y-auto overscroll-contain p-2.5">
                   {queue.map((item, idx) => {
                     const isCurrent = idx === queueIndex;
                     return (

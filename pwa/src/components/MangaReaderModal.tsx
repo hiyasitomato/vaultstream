@@ -891,6 +891,18 @@ export default function MangaReaderModal({
   }
 
   useEffect(() => {
+    if (minimized || typeof document === "undefined") return;
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overscrollBehavior = "none";
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overscrollBehavior = prevHtmlOverscroll;
+    };
+  }, [minimized]);
+
+  useEffect(() => {
     const el = modalRootRef.current;
     if (!el || minimized || splitWithVideo) return;
 
@@ -1333,28 +1345,6 @@ export default function MangaReaderModal({
         </div>
       ) : readingMode === "vertical" ? (
         <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[#060609]">
-          {/* Apple Liquid Glass Ambient Backdrop behind vertical margins */}
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            {primaryUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={primaryUrl}
-                alt=""
-                aria-hidden="true"
-                className="h-full w-full scale-[1.28] object-cover opacity-80 blur-[52px] saturate-[1.85] brightness-[0.34] contrast-[1.1] transition-opacity duration-500"
-                draggable={false}
-              />
-            )}
-            <div
-              className="absolute inset-0 backdrop-blur-3xl"
-              style={{
-                background:
-                  "radial-gradient(ellipse 70% 55% at 15% 15%, rgba(255,255,255,0.12), transparent 60%), radial-gradient(ellipse 65% 55% at 88% 85%, rgba(255,255,255,0.09), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(10,10,16,0.48) 48%, rgba(255,255,255,0.04) 100%)",
-              }}
-            />
-            <div className="absolute inset-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.14),inset_0_0_90px_rgba(0,0,0,0.55)]" />
-          </div>
-
           <div
             ref={verticalScrollRef}
             className="relative z-10 flex flex-1 flex-col items-center gap-0 overflow-y-auto overscroll-y-contain bg-transparent p-0"
@@ -1376,30 +1366,9 @@ export default function MangaReaderModal({
         </div>
       ) : (
         <div
-          className="relative flex min-h-0 min-w-0 flex-1 cursor-pointer select-none items-center justify-center overflow-hidden bg-[#060609] p-0"
+          className="relative flex min-h-0 min-w-0 flex-1 touch-none cursor-pointer select-none items-center justify-center overflow-hidden bg-[#060609] p-0"
           onClick={(e) => handleTapZone(e.clientX, e.currentTarget.getBoundingClientRect())}
         >
-          {/* Apple Liquid Glass Ambient Backdrop for Empty Margins */}
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            {primaryUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={primaryUrl}
-                alt=""
-                aria-hidden="true"
-                className="h-full w-full scale-[1.28] object-cover opacity-80 blur-[52px] saturate-[1.85] brightness-[0.34] contrast-[1.1] transition-opacity duration-500"
-                draggable={false}
-              />
-            )}
-            <div
-              className="absolute inset-0 backdrop-blur-3xl"
-              style={{
-                background:
-                  "radial-gradient(ellipse 70% 55% at 15% 15%, rgba(255,255,255,0.12), transparent 60%), radial-gradient(ellipse 65% 55% at 88% 85%, rgba(255,255,255,0.09), transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(10,10,16,0.48) 48%, rgba(255,255,255,0.04) 100%)",
-              }}
-            />
-            <div className="absolute inset-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.14),inset_0_0_90px_rgba(0,0,0,0.55)]" />
-          </div>
 
           {loadingCurrent && !primaryUrl ? (
             <div className="relative z-10 flex flex-col items-center gap-2 text-zinc-300">

@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   manifest: `${BASE_PATH}/manifest.webmanifest`,
   appleWebApp: {
     capable: true,
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "black",
     title: "VaultStream",
   },
   icons: {
