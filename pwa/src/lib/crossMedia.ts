@@ -246,3 +246,39 @@ export function findSeriesAndRelatedVideos(
     relatedVideos: scoredRelated,
   };
 }
+
+export function findSeriesManga(
+  activeManga: VaultVideoItem,
+  allVideos: VaultVideoItem[]
+): VaultVideoItem[] {
+  const candidates = allVideos.filter(
+    (v) => v.id !== activeManga.id && v.kind === "manga"
+  );
+  if (candidates.length === 0) return [activeManga];
+
+  const normActive = normalizeCrossMediaTitle(activeManga.title);
+  const badgeActive = extractSeriesBadge(activeManga.title);
+
+  const matches: VaultVideoItem[] = [activeManga];
+  for (const cand of candidates) {
+    const normCand = normalizeCrossMediaTitle(cand.title);
+    const badgeCand = extractSeriesBadge(cand.title);
+    const sameBadge = Boolean(
+      badgeActive && badgeCand && badgeActive.length >= 3 && badgeActive === badgeCand
+    );
+    const exactShortSeries = Boolean(
+      normActive.length >= 2 && normActive === normCand
+    );
+    const titleScore =
+      normActive.length >= 3 && normCand.length >= 3
+        ? computeCrossMediaScore(normActive, normCand)
+        : 0;
+
+    if (sameBadge || exactShortSeries || titleScore >= 75) {
+      matches.push(cand);
+    }
+  }
+
+  matches.sort((a, b) => naturalTitleCompare(a.title, b.title));
+  return matches;
+}

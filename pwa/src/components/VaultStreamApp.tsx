@@ -54,6 +54,7 @@ import {
 import {
   buildCrossMediaIndex,
   findSeriesAndRelatedVideos,
+  findSeriesManga,
   normalizeCrossMediaTitle,
 } from "@/lib/crossMedia";
 import { unlockVaultWithPassphrase } from "@/lib/crypto";
@@ -2861,6 +2862,11 @@ export default function VaultStreamApp() {
     return findSeriesAndRelatedVideos(activeVideo, videos, videoGenresMap, 6);
   }, [activeVideo, videos, videoGenresMap]);
 
+  const seriesManga = useMemo(() => {
+    if (!activeManga) return [];
+    return findSeriesManga(activeManga, videos);
+  }, [activeManga, videos]);
+
   const effectiveViewMode: ViewMode = navSection === "files" ? "list" : viewMode;
 
   const navItems: Array<{
@@ -5155,6 +5161,8 @@ export default function VaultStreamApp() {
           manga={activeManga}
           allVideos={videos}
           linkedVideos={crossMedia.linkedById[activeManga.id] ?? []}
+          seriesManga={seriesManga}
+          onSelectManga={(m) => setActiveManga(m)}
           accessToken={accessToken}
           masterKey={masterKey}
           isFavorite={Boolean(userMetaMap[activeManga.id]?.favorite)}

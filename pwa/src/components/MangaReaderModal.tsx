@@ -12,13 +12,16 @@ import {
   EyeOff,
   Film,
   Heart,
+  Layers,
   Loader2,
+  Maximize2,
   Pause,
   Play,
   Repeat,
   RotateCcw,
   Rows3,
   Search,
+  SkipForward,
   Sparkles,
   Square,
   Tag,
@@ -40,6 +43,8 @@ interface MangaReaderModalProps {
   manga: VaultVideoItem;
   allVideos: VaultVideoItem[];
   linkedVideos?: VaultVideoItem[];
+  seriesManga?: VaultVideoItem[];
+  onSelectManga?: (manga: VaultVideoItem) => void;
   accessToken: string;
   masterKey: CryptoKey | null;
   isFavorite: boolean;
@@ -224,6 +229,8 @@ export default function MangaReaderModal({
   manga,
   allVideos,
   linkedVideos = [],
+  seriesManga = [],
+  onSelectManga,
   accessToken,
   masterKey,
   isFavorite,
@@ -273,6 +280,22 @@ export default function MangaReaderModal({
   // In-reader Video Picker for 1-tap Simultaneous Video + Manga Split Mode
   const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const [videoPickerQuery, setVideoPickerQuery] = useState("");
+  const [minimized, setMinimized] = useState(false);
+  const [seriesPickerOpen, setSeriesPickerOpen] = useState(false);
+
+  useEffect(() => {
+    setMinimized(false);
+    setSeriesPickerOpen(false);
+  }, [manga.id]);
+
+  const currentSeriesIdx = useMemo(
+    () => seriesManga.findIndex((m) => m.id === manga.id),
+    [seriesManga, manga.id]
+  );
+  const nextManga =
+    currentSeriesIdx >= 0 && currentSeriesIdx + 1 < seriesManga.length
+      ? seriesManga[currentSeriesIdx + 1]
+      : null;
 
   const pickableVideos = useMemo(() => {
     const q = videoPickerQuery.trim().toLowerCase();
@@ -519,7 +542,17 @@ export default function MangaReaderModal({
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
       if (e.key === "Escape") {
-        onClose();
+        if (videoPickerOpen) {
+          setVideoPickerOpen(false);
+          return;
+        }
+        if (seriesPickerOpen) {
+          setSeriesPickerOpen(false);
+          return;
+        }
+        if (!minimized) {
+          setMinimized(true);
+        }
         return;
       }
       if (e.key === " ") {
@@ -540,7 +573,7 @@ export default function MangaReaderModal({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [readingMode, goNext, goPrev, onClose]);
+  }, [readingMode, goNext, goPrev, minimized, videoPickerOpen, seriesPickerOpen]);
 
   const hoverIdx = hoverScrub?.idx ?? null;
   const hoverPreviewUrl = hoverIdx !== null ? pageUrls[hoverIdx] : undefined;
@@ -704,6 +737,57 @@ export default function MangaReaderModal({
       ? "fixed inset-x-0 bottom-0 top-[34dvh] z-40 flex flex-col overflow-hidden bg-[#08080b] lg:inset-y-0 lg:left-[42vw] lg:right-0 lg:top-0 lg:h-[100dvh]"
       : "fixed inset-0 z-40 flex h-[100dvh] flex-col overflow-hidden bg-[#08080b]";
 
+  if (minimized) {
+    return (
+      <div
+        className={`fixed right-3 z-[75] flex w-[280px] max-w-[calc(100vw-1.5rem)] items-center gap-2.5 rounded-2xl border border-white/15 bg-zinc-950/92 p-2 shadow-2xl shadow-black/70 backdrop-blur-2xl sm:right-4 sm:w-[310px] ${
+          hasActiveVideo ? "bottom-36 md:bottom-24" : "bottom-20 md:bottom-4"
+        }`}
+        role="region"
+        aria-label={`ミニ漫画リーダー: ${manga.title}`}
+      >
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left transition hover:opacity-90"
+          title="タップして漫画リーダーに戻る"
+        >
+          <PickerThumb
+            item={manga}
+            accessToken={accessToken}
+            masterKey={masterKey}
+            thumbVersion={thumbVersions[manga.id] ?? 0}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1 text-[10px] font-semibold text-amber-300">
+              <BookOpen className="h-3 w-3 shrink-0" />
+              <span>読書中</span>
+              {seriesManga.length > 1 && currentSeriesIdx >= 0 && (
+                <span className="text-zinc-400">
+                  ({currentSeriesIdx + 1}/{seriesManga.length})
+                </span>
+              )}
+            </div>
+            <p className="truncate text-xs font-bold text-white">{manga.title}</p>
+            <p className="font-mono text-[10px] text-zinc-400">
+              P.{pageIdx + 1} / {totalPages}
+            </p>
+          </div>
+          <Maximize2 className="h-4 w-4 shrink-0 text-zinc-400" />
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-zinc-300 transition hover:bg-rose-500/30 hover:text-white"
+          title="漫画リーダーを閉じる"
+          aria-label="漫画リーダーを閉じる"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`${containerPositionClass} ios-no-callout`}
@@ -737,11 +821,12 @@ export default function MangaReaderModal({
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => setMinimized(true)}
             className="inline-flex shrink-0 items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
+            title="ホームに戻る（右下に小さく残す）"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">戻る</span>
+            <span className="hidden sm:inline">ホーム</span>
           </button>
           <div className="min-w-0">
             <h2 className="truncate text-xs font-bold text-white sm:text-sm">{manga.title}</h2>
@@ -769,6 +854,22 @@ export default function MangaReaderModal({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {seriesManga.length > 1 && onSelectManga && (
+            <button
+              type="button"
+              onClick={() => setSeriesPickerOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/25"
+              title="シリーズの他の巻・話へ移動"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">
+                シリーズ ({currentSeriesIdx + 1}/{seriesManga.length})
+              </span>
+              <span className="sm:hidden">
+                {currentSeriesIdx + 1}/{seriesManga.length}
+              </span>
+            </button>
+          )}
           {/* Simultaneous Video + Manga Split Controls (Works on Mobile & PC!) */}
           {hasActiveVideo ? (
             <>
@@ -1409,6 +1510,109 @@ export default function MangaReaderModal({
           </div>
         </div>
       </footer>
+
+      {/* Sequel / Next Volume Floating Prompt when at the end of a series volume */}
+      {nextManga &&
+        onSelectManga &&
+        totalPages > 0 &&
+        (pageIdx >= totalPages - 1 || secondaryIdx === totalPages - 1) && (
+          <div className="pointer-events-auto absolute bottom-20 left-1/2 z-30 w-[min(92vw,420px)] -translate-x-1/2">
+            <div className="flex items-center gap-3 rounded-2xl border border-amber-400/45 bg-zinc-950/92 p-2.5 shadow-2xl backdrop-blur-2xl">
+              <PickerThumb
+                item={nextManga}
+                accessToken={accessToken}
+                masterKey={masterKey}
+                thumbVersion={thumbVersions[nextManga.id] ?? 0}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-bold text-amber-300">シリーズの続編</p>
+                <p className="truncate text-xs font-semibold text-white">{nextManga.title}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onSelectManga(nextManga)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-amber-400 px-3 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-300"
+              >
+                <span>次の巻へ</span>
+                <SkipForward className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+      {/* Series Volume Picker Modal */}
+      {seriesPickerOpen && seriesManga.length > 1 && onSelectManga && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md"
+          onClick={() => setSeriesPickerOpen(false)}
+        >
+          <div
+            className="flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/15 bg-zinc-950/95 shadow-2xl backdrop-blur-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-amber-300" />
+                <h3 className="text-sm font-bold text-white">
+                  シリーズ一覧（全 {seriesManga.length} 巻）
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSeriesPickerOpen(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-zinc-300 hover:bg-white/20 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 space-y-1.5 overflow-y-auto p-3">
+              {seriesManga.map((vol, idx) => {
+                const isCurrent = vol.id === manga.id;
+                return (
+                  <button
+                    key={vol.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectManga(vol);
+                      setSeriesPickerOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-3 rounded-xl border p-2 text-left transition ${
+                      isCurrent
+                        ? "border-amber-400/70 bg-amber-500/15"
+                        : "border-white/5 bg-white/[0.03] hover:border-amber-400/40 hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    <PickerThumb
+                      item={vol}
+                      accessToken={accessToken}
+                      masterKey={masterKey}
+                      thumbVersion={thumbVersions[vol.id] ?? 0}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                          #{idx + 1}
+                        </span>
+                        {isCurrent && (
+                          <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+                            読書中
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-white">
+                        {vol.title}
+                      </p>
+                      {vol.pageCount ? (
+                        <p className="font-mono text-[10px] text-zinc-400">{vol.pageCount} ページ</p>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* In-Reader Liquid Glass Video Picker for Simultaneous Video + Manga Mode */}
       {videoPickerOpen && (
