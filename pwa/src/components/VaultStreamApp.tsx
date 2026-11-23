@@ -7,6 +7,8 @@ import {
   BookOpen,
   Check,
   CheckSquare,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Cloud,
   CloudOff,
@@ -243,6 +245,130 @@ function seededOrderHash(id: string, seed: number): number {
   h = Math.imul(h, 0x85ebca6b) >>> 0;
   h ^= h >>> 13;
   return h >>> 0;
+}
+
+function HorizontalShelf({
+  children,
+  className = "gap-4 pb-2",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const dragStateRef = useRef<{
+    active: boolean;
+    startX: number;
+    startScrollLeft: number;
+    moved: boolean;
+  }>({ active: false, startX: 0, startScrollLeft: 0, moved: false });
+
+  const updateScrollButtons = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 4);
+    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 4);
+  }, []);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    updateScrollButtons();
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(updateScrollButtons)
+        : null;
+    ro?.observe(el);
+    const timer = setTimeout(updateScrollButtons, 150);
+    return () => {
+      ro?.disconnect();
+      clearTimeout(timer);
+    };
+  }, [children, updateScrollButtons]);
+
+  const scrollByPage = (dir: -1 | 1) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const step = Math.max(280, Math.round(el.clientWidth * 0.78));
+    el.scrollBy({ left: dir * step, behavior: "smooth" });
+  };
+
+  return (
+    <div className="group/shelf relative">
+      {canScrollLeft && (
+        <button
+          type="button"
+          onClick={() => scrollByPage(-1)}
+          className="absolute left-1 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-700/80 bg-zinc-950/90 text-zinc-100 shadow-lg backdrop-blur-md transition hover:border-zinc-500 hover:bg-zinc-800 md:flex"
+          aria-label="左へスクロール"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+      )}
+      {canScrollRight && (
+        <button
+          type="button"
+          onClick={() => scrollByPage(1)}
+          className="absolute right-1 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-700/80 bg-zinc-950/90 text-zinc-100 shadow-lg backdrop-blur-md transition hover:border-zinc-500 hover:bg-zinc-800 md:flex"
+          aria-label="右へスクロール"
+        >
+          <ChevronRight className="h-5 w-5" />
+        </button>
+      )}
+      <div
+        ref={scrollerRef}
+        onScroll={updateScrollButtons}
+        onDragStart={(e) => e.preventDefault()}
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          const el = scrollerRef.current;
+          if (!el) return;
+          dragStateRef.current = {
+            active: true,
+            startX: e.clientX,
+            startScrollLeft: el.scrollLeft,
+            moved: false,
+          };
+        }}
+        onMouseMove={(e) => {
+          const st = dragStateRef.current;
+          if (!st.active) return;
+          const el = scrollerRef.current;
+          if (!el) return;
+          const dx = e.clientX - st.startX;
+          if (Math.abs(dx) > 6) st.moved = true;
+          if (st.moved) {
+            el.scrollLeft = st.startScrollLeft - dx;
+          }
+        }}
+        onMouseUp={() => {
+          const st = dragStateRef.current;
+          st.active = false;
+          if (st.moved) {
+            setTimeout(() => {
+              dragStateRef.current.moved = false;
+            }, 0);
+          }
+        }}
+        onMouseLeave={() => {
+          dragStateRef.current.active = false;
+          dragStateRef.current.moved = false;
+        }}
+        onClickCapture={(e) => {
+          if (dragStateRef.current.moved) {
+            e.preventDefault();
+            e.stopPropagation();
+            dragStateRef.current.moved = false;
+          }
+        }}
+        className={`no-scrollbar flex select-none overflow-x-auto md:cursor-grab md:active:cursor-grabbing ${className}`}
+      >
+        {children}
+      </div>
+    </div>
+  );
 }
 
 const CrossMediaMiniThumb = memo(function CrossMediaMiniThumb({
@@ -4372,7 +4498,7 @@ export default function VaultStreamApp() {
                         </div>
                       </div>
 
-                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+                      <HorizontalShelf>
                         {items.slice(0, 16).map((video) => (
                           <VideoCard
                             key={`grp-${genre}-${video.id}`}
@@ -4409,7 +4535,7 @@ export default function VaultStreamApp() {
                             <span>すべて表示</span>
                           </button>
                         )}
-                      </div>
+                      </HorizontalShelf>
                     </section>
                   ))
                 )}
@@ -4429,7 +4555,7 @@ export default function VaultStreamApp() {
                         <Clock className="h-4 w-4 text-zinc-400" />
                         <h2 className="text-sm font-bold text-white">続きを見る</h2>
                       </div>
-                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+                      <HorizontalShelf>
                         {continueWatchingVideos.map((video) => (
                           <VideoCard
                             key={`cw-${video.id}`}
@@ -4453,7 +4579,7 @@ export default function VaultStreamApp() {
                             onClickGenre={handleClickGenreFromCard}
                           />
                         ))}
-                      </div>
+                      </HorizontalShelf>
                     </section>
                   )}
 
@@ -4483,7 +4609,7 @@ export default function VaultStreamApp() {
                           <span>別の候補</span>
                         </button>
                       </div>
-                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+                      <HorizontalShelf>
                         {recommendedShelfItems.map((video) => {
                           const reason = recommendationData.reasonById.get(video.id);
                           return (
@@ -4518,7 +4644,7 @@ export default function VaultStreamApp() {
                             </div>
                           );
                         })}
-                      </div>
+                      </HorizontalShelf>
                     </section>
                   )}
 
@@ -4541,7 +4667,7 @@ export default function VaultStreamApp() {
                           同じ作品を 1 タップで同時視聴
                         </span>
                       </div>
-                      <div className="no-scrollbar flex gap-3.5 overflow-x-auto pb-2">
+                      <HorizontalShelf className="gap-3.5 pb-2">
                         {crossMedia.sets.map((set) => (
                           <div
                             key={`set-${set.manga.id}`}
@@ -4592,7 +4718,7 @@ export default function VaultStreamApp() {
                             </div>
                           </div>
                         ))}
-                      </div>
+                      </HorizontalShelf>
                     </section>
                   )}
 
