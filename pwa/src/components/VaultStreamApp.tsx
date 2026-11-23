@@ -2040,6 +2040,15 @@ export default function VaultStreamApp() {
     return [...top16, ...extras];
   }, [homeGenreExpanded, homeScopedGenres, selectedGenres]);
 
+  const isGroupBrowseMode =
+    navSection === "home" &&
+    !selectionMode &&
+    !searchQuery.trim() &&
+    selectedGenres.length === 0 &&
+    !onlyUncategorized &&
+    homeGenreGroup !== "main" &&
+    homeGenreGroup !== "all";
+
   const sidebarGenreList = useMemo(() => {
     const q = sidebarGenreSearch.trim().toLowerCase();
     return genreCounts.filter(([genre]) => {
@@ -2684,6 +2693,30 @@ export default function VaultStreamApp() {
     () => filteredVideos.slice(0, visibleHomeCount),
     [filteredVideos, visibleHomeCount]
   );
+
+  const groupedSectionList = useMemo(() => {
+    if (!isGroupBrowseMode) return [];
+    const scopedSet = new Set(homeScopedGenres.map(([g]) => g));
+    const byGenre = new Map<string, VaultVideoItem[]>();
+    for (const v of filteredVideos) {
+      const gList = videoGenresMap[v.id] ?? EMPTY_STRING_ARRAY;
+      for (const g of gList) {
+        if (!scopedSet.has(g)) continue;
+        let arr = byGenre.get(g);
+        if (!arr) {
+          arr = [];
+          byGenre.set(g, arr);
+        }
+        arr.push(v);
+      }
+    }
+    return homeScopedGenres
+      .map(([genre]) => ({
+        genre,
+        items: byGenre.get(genre) ?? [],
+      }))
+      .filter((sec) => sec.items.length > 0);
+  }, [isGroupBrowseMode, homeScopedGenres, filteredVideos, videoGenresMap]);
 
   // Automatic background "Zero-Wait Pre-Warmer": pre-buffers Continue Watching & visible top cards (~0.05s start!)
   useEffect(() => {
@@ -3873,7 +3906,11 @@ export default function VaultStreamApp() {
                         <button
                           key={`hg-${tab.id}`}
                           type="button"
-                          onClick={() => setHomeGenreGroup(tab.id)}
+                          onClick={() => {
+                            setHomeGenreGroup(tab.id);
+                            setSelectedGenres([]);
+                            setOnlyUncategorized(false);
+                          }}
                           className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
                             active
                               ? "border-zinc-600 bg-zinc-800 text-white"
@@ -4272,6 +4309,111 @@ export default function VaultStreamApp() {
                   )}
                 </div>
               </section>
+            ) : isGroupBrowseMode ? (
+              <div className="space-y-7">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-bold text-white">
+                      {GENRE_GROUP_TABS.find((t) => t.id === homeGenreGroup)?.label ?? ""}
+                    </h2>
+                    <span className="rounded-full bg-zinc-900 px-2.5 py-0.5 text-xs text-zinc-400">
+                      {groupedSectionList.length} ジャンル
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHomeGenreGroup("main")}
+                    className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
+                  >
+                    通常のホーム一覧へ戻る
+                  </button>
+                </div>
+
+                {groupedSectionList.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-zinc-800 p-10 text-center text-xs text-zinc-400">
+                    このグループに表示できる動画がありません。
+                  </div>
+                ) : (
+                  groupedSectionList.map(({ genre, items }) => (
+                    <section key={`grp-sec-${genre}`} className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleGenreSelection(genre)}
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-xs font-semibold transition ${getGenreStyle(
+                              genre,
+                              customGenres
+                            )}`}
+                          >
+                            <span>{genre}</span>
+                            <span className="font-mono text-[11px] opacity-75">
+                              {items.length}
+                            </span>
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handlePlayAllFiltered(items)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
+                          >
+                            <Play className="h-3 w-3 fill-current text-zinc-400" />
+                            <span>連続再生</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleGenreSelection(genre)}
+                            className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
+                          >
+                            一覧で見る
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2">
+                        {items.slice(0, 16).map((video) => (
+                          <VideoCard
+                            key={`grp-${genre}-${video.id}`}
+                            video={video}
+                            accessToken={accessToken}
+                            masterKey={masterKey}
+                            genres={videoGenresMap[video.id] ?? EMPTY_STRING_ARRAY}
+                            customGenres={customGenres}
+                            isFavorite={Boolean(userMetaMap[video.id]?.favorite)}
+                            isInQueue={queueIdSet.has(video.id)}
+                            progress={progressMap[video.id]}
+                            thumbnailTimeSec={userMetaMap[video.id]?.thumbnailTimeSec}
+                            thumbVersion={thumbVersions[video.id] ?? 0}
+                            compact
+                            portraitCover={categoryTab === "漫画"}
+                            linkedItems={crossMedia.linkedById[video.id]}
+                            onOpenCrossMediaSet={handleOpenCrossMediaSet}
+                            onSelect={handlePlayVideo}
+                            onAddToQueue={handleAddToQueue}
+                            onToggleFavorite={handleToggleFavorite}
+                            onEditTags={setEditingTagsVideo}
+                            onClickGenre={handleClickGenreFromCard}
+                          />
+                        ))}
+                        {items.length > 16 && (
+                          <button
+                            type="button"
+                            onClick={() => toggleGenreSelection(genre)}
+                            className="flex w-36 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-zinc-800 bg-zinc-900/40 p-4 text-xs font-medium text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-white"
+                          >
+                            <span className="font-mono text-sm font-bold text-white">
+                              +{items.length - 16}
+                            </span>
+                            <span>すべて表示</span>
+                          </button>
+                        )}
+                      </div>
+                    </section>
+                  ))
+                )}
+              </div>
             ) : (
               <>
                 {/* YouTube-style "Continue Watching" horizontal shelf on Home */}
