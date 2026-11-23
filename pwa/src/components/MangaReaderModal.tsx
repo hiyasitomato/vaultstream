@@ -296,19 +296,21 @@ export default function MangaReaderModal({
   const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const [videoPickerQuery, setVideoPickerQuery] = useState("");
   const [minimized, setMinimized] = useState(false);
-  const [dragOffsetY, setDragOffsetY] = useState(0);
+  const [pullHint, setPullHint] = useState<"idle" | "pulling" | "ready">("idle");
+  const modalRootRef = useRef<HTMLDivElement | null>(null);
   const pullGestureRef = useRef<{
     x: number;
     y: number;
     t: number;
     axis: "x" | "y" | null;
+    startedOnHeader: boolean;
   } | null>(null);
   const [seriesPickerOpen, setSeriesPickerOpen] = useState(false);
   const [queuePickerOpen, setQueuePickerOpen] = useState(false);
 
   useEffect(() => {
     setMinimized(false);
-    setDragOffsetY(0);
+    setPullHint("idle");
     setSeriesPickerOpen(false);
     setQueuePickerOpen(false);
   }, [manga.id]);
@@ -888,33 +890,46 @@ export default function MangaReaderModal({
     );
   }
 
-  const handlePullTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      if (splitWithVideo || e.touches.length !== 1) return;
-      const t = e.touches[0];
+  useEffect(() => {
+    const el = modalRootRef.current;
+    if (!el || minimized || splitWithVideo) return;
+
+    const resetTransform = () => {
+      el.style.transition = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)";
+      el.style.transform = "translate3d(0, 0, 0)";
+      setPullHint("idle");
+    };
+
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      const t = ev.touches[0];
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest("input, button, a")) return;
       pullGestureRef.current = {
         x: t.clientX,
         y: t.clientY,
         t: performance.now(),
         axis: null,
+        startedOnHeader: Boolean(target?.closest("header")),
       };
-    },
-    [splitWithVideo]
-  );
+    };
 
-  const handlePullTouchMove = useCallback(
-    (e: React.TouchEvent, allowHorizontalFlip: boolean) => {
+    const onTouchMove = (ev: TouchEvent) => {
       const g = pullGestureRef.current;
-      if (!g || splitWithVideo || e.touches.length !== 1) return;
-      const t = e.touches[0];
+      if (!g || ev.touches.length !== 1) return;
+      const t = ev.touches[0];
       const dx = t.clientX - g.x;
       const dy = t.clientY - g.y;
 
       if (!g.axis) {
         if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-        if (dy > 10 && Math.abs(dy) > Math.abs(dx) * 1.15) {
+        const canPullVertical =
+          readingMode !== "vertical" ||
+          g.startedOnHeader ||
+          (verticalScrollRef.current?.scrollTop ?? 0) <= 2;
+        if (canPullVertical && dy > 10 && Math.abs(dy) > Math.abs(dx) * 1.15) {
           g.axis = "y";
-        } else if (allowHorizontalFlip && Math.abs(dx) >= Math.abs(dy)) {
+        } else if (readingMode !== "vertical" && Math.abs(dx) >= Math.abs(dy)) {
           g.axis = "x";
         } else {
           pullGestureRef.current = null;
@@ -923,32 +938,33 @@ export default function MangaReaderModal({
       }
 
       if (g.axis === "y") {
-        setDragOffsetY(Math.max(0, dy));
+        if (ev.cancelable) ev.preventDefault();
+        const offset = Math.max(0, dy);
+        el.style.transition = "none";
+        el.style.transform = `translate3d(0, ${offset}px, 0)`;
+        setPullHint(offset > 95 ? "ready" : offset > 24 ? "pulling" : "idle");
       }
-    },
-    [splitWithVideo]
-  );
+    };
 
-  const handlePullTouchEnd = useCallback(
-    (e: React.TouchEvent, allowHorizontalFlip: boolean) => {
+    const onTouchEnd = (ev: TouchEvent) => {
       const g = pullGestureRef.current;
       pullGestureRef.current = null;
       if (!g) return;
-      const t = e.changedTouches[0];
+      const t = ev.changedTouches[0];
       const dx = (t?.clientX ?? g.x) - g.x;
       const dy = (t?.clientY ?? g.y) - g.y;
       const dt = Math.max(1, performance.now() - g.t);
       const vy = dy / dt;
 
       if (g.axis === "y") {
-        setDragOffsetY(0);
+        resetTransform();
         if (dy > 95 || (dy > 45 && vy > 0.45)) {
           setMinimized(true);
         }
         return;
       }
 
-      if (allowHorizontalFlip && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) {
+      if (readingMode !== "vertical" && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) {
         if (dx > 0) {
           if (readingMode === "rtl") goNext();
           else goPrev();
@@ -957,33 +973,38 @@ export default function MangaReaderModal({
           else goNext();
         }
       }
-    },
-    [readingMode, goNext, goPrev]
-  );
+    };
+
+    const onTouchCancel = () => {
+      pullGestureRef.current = null;
+      resetTransform();
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchCancel, { passive: true });
+
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchCancel);
+    };
+  }, [minimized, splitWithVideo, readingMode, goNext, goPrev]);
 
   return (
     <div
-      className={`${containerPositionClass} ios-no-callout`}
-      style={{
-        transform:
-          dragOffsetY > 0
-            ? `translate3d(0, ${dragOffsetY}px, 0) scale(${1 - Math.min(0.12, dragOffsetY / 1600)})`
-            : "translate3d(0, 0, 0) scale(1)",
-        borderRadius: dragOffsetY > 0 ? "24px" : "0px",
-        opacity: dragOffsetY > 0 ? Math.max(0.55, 1 - dragOffsetY / 700) : 1,
-        transition:
-          dragOffsetY > 0
-            ? "none"
-            : "transform 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease, border-radius 200ms ease",
-      }}
+      ref={modalRootRef}
+      className={`${containerPositionClass} ios-no-callout overscroll-none`}
       role="dialog"
       aria-modal="true"
       aria-label={manga.title}
     >
       {/* Smooth Pull-Down-to-Minimize Floating Pill */}
-      {dragOffsetY > 24 && (
+      {pullHint !== "idle" && (
         <div className="pointer-events-none absolute left-1/2 top-5 z-40 -translate-x-1/2 rounded-full border border-white/20 bg-black/85 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xl">
-          {dragOffsetY > 95 ? "↓ 離すとミニ窓でホームへ" : "↓ 下に引いてホームへ"}
+          {pullHint === "ready" ? "↓ 離すとミニ窓でホームへ" : "↓ 下に引いてホームへ"}
         </div>
       )}
       {/* Auto-Slide Countdown Progress Hairline (GPU compositor animation) */}
@@ -1003,10 +1024,7 @@ export default function MangaReaderModal({
 
       {/* Top HUD Header (Apple Liquid Glass) */}
       <header
-        onTouchStart={handlePullTouchStart}
-        onTouchMove={(e) => handlePullTouchMove(e, false)}
-        onTouchEnd={(e) => handlePullTouchEnd(e, false)}
-        className={`z-20 flex shrink-0 items-center justify-between gap-2 border-b border-white/15 bg-black/45 px-3 shadow-[inset_0_-1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl transition-opacity duration-200 sm:px-4 ${
+        className={`z-20 flex shrink-0 touch-none items-center justify-between gap-2 border-b border-white/15 bg-black/45 px-3 shadow-[inset_0_-1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl transition-opacity duration-200 sm:px-4 ${
           hudVisible
             ? "pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] opacity-100"
             : "pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0"
@@ -1339,7 +1357,7 @@ export default function MangaReaderModal({
 
           <div
             ref={verticalScrollRef}
-            className="relative z-10 flex flex-1 flex-col items-center gap-0 overflow-y-auto bg-transparent p-0"
+            className="relative z-10 flex flex-1 flex-col items-center gap-0 overflow-y-auto overscroll-y-contain bg-transparent p-0"
           >
             {pages.map((p, idx) => (
               <LazyVerticalMangaPage
@@ -1360,13 +1378,6 @@ export default function MangaReaderModal({
         <div
           className="relative flex min-h-0 min-w-0 flex-1 cursor-pointer select-none items-center justify-center overflow-hidden bg-[#060609] p-0"
           onClick={(e) => handleTapZone(e.clientX, e.currentTarget.getBoundingClientRect())}
-          onTouchStart={handlePullTouchStart}
-          onTouchMove={(e) => handlePullTouchMove(e, true)}
-          onTouchEnd={(e) => handlePullTouchEnd(e, true)}
-          onTouchCancel={() => {
-            pullGestureRef.current = null;
-            setDragOffsetY(0);
-          }}
         >
           {/* Apple Liquid Glass Ambient Backdrop for Empty Margins */}
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
