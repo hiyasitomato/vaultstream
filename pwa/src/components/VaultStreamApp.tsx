@@ -472,8 +472,10 @@ export default function VaultStreamApp() {
   const [autoSetupBusy, setAutoSetupBusy] = useState(false);
   const oauthJsonInputRef = useRef<HTMLInputElement | null>(null);
 
-  const activeVideo =
+  const currentQueueItem =
     queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
+  const activeVideo =
+    currentQueueItem && currentQueueItem.kind !== "manga" ? currentQueueItem : null;
 
   const queueIdSet = useMemo(() => new Set(queue.map((v) => v.id)), [queue]);
 
@@ -531,17 +533,22 @@ export default function VaultStreamApp() {
     [handlePlayVideo]
   );
 
-  const handleSelectQueueIndex = useCallback((idx: number) => {
-    setStartTimeOverride(null);
-    setQueueIndex(idx);
-  }, []);
+  const handleSelectQueueIndex = useCallback(
+    (idx: number) => {
+      setStartTimeOverride(null);
+      setQueueIndex(idx);
+      const target = queue[idx];
+      if (target?.kind === "manga") {
+        setActiveManga(target);
+      } else if (target) {
+        setActiveManga(null);
+      }
+    },
+    [queue]
+  );
 
   const handleAddToQueue = useCallback(
     (video: VaultVideoItem) => {
-      if (video.kind === "manga") {
-        setActiveManga(video);
-        return;
-      }
       setQueue((prev) => {
         if (prev.some((item) => item.id === video.id)) {
           showQueueToast("すでに再生キューに入っています");
@@ -550,8 +557,11 @@ export default function VaultStreamApp() {
         const next = [...prev, video];
         if (prev.length === 0) {
           setQueueIndex(0);
+          if (video.kind === "manga") {
+            setActiveManga(video);
+          }
         }
-        showQueueToast(`キューに追加しました（計 ${next.length} 本）`);
+        showQueueToast(`キューに追加しました（計 ${next.length} 件）`);
         return next;
       });
     },
@@ -560,18 +570,20 @@ export default function VaultStreamApp() {
 
   const handlePlayAllFiltered = useCallback(
     (items: VaultVideoItem[]) => {
-      const playable = items.filter((v) => v.kind !== "manga");
-      if (playable.length === 0) return;
+      if (items.length === 0) return;
       setStartTimeOverride(null);
-      setQueue(playable);
+      setQueue(items);
       setQueueIndex(0);
-      showQueueToast(`${playable.length} 本をキューで連続再生します`);
+      if (items[0].kind === "manga") {
+        setActiveManga(items[0]);
+      }
+      showQueueToast(`${items.length} 件をキューで連続再生します`);
     },
     [showQueueToast]
   );
 
   const handleBulkAddToQueue = useCallback(() => {
-    const picked = videos.filter((v) => v.kind !== "manga" && selectedVideoIds.has(v.id));
+    const picked = videos.filter((v) => selectedVideoIds.has(v.id));
     if (picked.length === 0) return;
     setQueue((prev) => {
       const existingIds = new Set(prev.map((v) => v.id));
@@ -5163,6 +5175,11 @@ export default function VaultStreamApp() {
           linkedVideos={crossMedia.linkedById[activeManga.id] ?? []}
           seriesManga={seriesManga}
           onSelectManga={(m) => setActiveManga(m)}
+          queue={queue}
+          queueIndex={queueIndex}
+          onSelectQueueIndex={handleSelectQueueIndex}
+          onRemoveFromQueue={handleRemoveFromQueue}
+          onClearQueue={handleClearQueue}
           accessToken={accessToken}
           masterKey={masterKey}
           isFavorite={Boolean(userMetaMap[activeManga.id]?.favorite)}

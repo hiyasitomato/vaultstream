@@ -13,6 +13,7 @@ import {
   Film,
   Heart,
   Layers,
+  ListMusic,
   Loader2,
   Maximize2,
   Pause,
@@ -45,6 +46,11 @@ interface MangaReaderModalProps {
   linkedVideos?: VaultVideoItem[];
   seriesManga?: VaultVideoItem[];
   onSelectManga?: (manga: VaultVideoItem) => void;
+  queue?: VaultVideoItem[];
+  queueIndex?: number;
+  onSelectQueueIndex?: (idx: number) => void;
+  onRemoveFromQueue?: (idx: number) => void;
+  onClearQueue?: () => void;
   accessToken: string;
   masterKey: CryptoKey | null;
   isFavorite: boolean;
@@ -231,6 +237,11 @@ export default function MangaReaderModal({
   linkedVideos = [],
   seriesManga = [],
   onSelectManga,
+  queue = [],
+  queueIndex = -1,
+  onSelectQueueIndex,
+  onRemoveFromQueue,
+  onClearQueue,
   accessToken,
   masterKey,
   isFavorite,
@@ -282,11 +293,30 @@ export default function MangaReaderModal({
   const [videoPickerQuery, setVideoPickerQuery] = useState("");
   const [minimized, setMinimized] = useState(false);
   const [seriesPickerOpen, setSeriesPickerOpen] = useState(false);
+  const [queuePickerOpen, setQueuePickerOpen] = useState(false);
 
   useEffect(() => {
     setMinimized(false);
     setSeriesPickerOpen(false);
+    setQueuePickerOpen(false);
   }, [manga.id]);
+
+  const currentQueueIdx = useMemo(
+    () => queue.findIndex((q) => q.id === manga.id),
+    [queue, manga.id]
+  );
+  const nextQueueItem =
+    currentQueueIdx >= 0 && currentQueueIdx + 1 < queue.length
+      ? queue[currentQueueIdx + 1]
+      : queueIndex >= 0 && queueIndex + 1 < queue.length
+        ? queue[queueIndex + 1]
+        : null;
+  const nextQueueTargetIdx =
+    currentQueueIdx >= 0 && currentQueueIdx + 1 < queue.length
+      ? currentQueueIdx + 1
+      : queueIndex >= 0 && queueIndex + 1 < queue.length
+        ? queueIndex + 1
+        : -1;
 
   const currentSeriesIdx = useMemo(
     () => seriesManga.findIndex((m) => m.id === manga.id),
@@ -854,6 +884,18 @@ export default function MangaReaderModal({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {queue.length > 0 && onSelectQueueIndex && (
+            <button
+              type="button"
+              onClick={() => setQueuePickerOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-indigo-400/40 bg-indigo-500/15 px-2.5 py-1.5 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/25"
+              title="再生キューを表示"
+            >
+              <ListMusic className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">キュー ({queue.length})</span>
+              <span className="sm:hidden">{queue.length}</span>
+            </button>
+          )}
           {seriesManga.length > 1 && onSelectManga && (
             <button
               type="button"
@@ -1511,34 +1553,145 @@ export default function MangaReaderModal({
         </div>
       </footer>
 
-      {/* Sequel / Next Volume Floating Prompt when at the end of a series volume */}
-      {nextManga &&
-        onSelectManga &&
+      {/* Sequel / Next Queue Item Floating Prompt when at the end of a manga */}
+      {(nextManga || (nextQueueItem && onSelectQueueIndex && nextQueueTargetIdx >= 0)) &&
         totalPages > 0 &&
         (pageIdx >= totalPages - 1 || secondaryIdx === totalPages - 1) && (
-          <div className="pointer-events-auto absolute bottom-20 left-1/2 z-30 w-[min(92vw,420px)] -translate-x-1/2">
+          <div className="pointer-events-auto absolute bottom-20 left-1/2 z-30 w-[min(92vw,440px)] -translate-x-1/2">
             <div className="flex items-center gap-3 rounded-2xl border border-amber-400/45 bg-zinc-950/92 p-2.5 shadow-2xl backdrop-blur-2xl">
               <PickerThumb
-                item={nextManga}
+                item={(nextQueueItem ?? nextManga)!}
                 accessToken={accessToken}
                 masterKey={masterKey}
-                thumbVersion={thumbVersions[nextManga.id] ?? 0}
+                thumbVersion={thumbVersions[(nextQueueItem ?? nextManga)!.id] ?? 0}
               />
               <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-bold text-amber-300">シリーズの続編</p>
-                <p className="truncate text-xs font-semibold text-white">{nextManga.title}</p>
+                <p className="text-[10px] font-bold text-amber-300">
+                  {nextQueueItem ? "次のキュー作品" : "シリーズの続編"}
+                </p>
+                <p className="truncate text-xs font-semibold text-white">
+                  {(nextQueueItem ?? nextManga)!.title}
+                </p>
               </div>
               <button
                 type="button"
-                onClick={() => onSelectManga(nextManga)}
+                onClick={() => {
+                  if (nextQueueItem && onSelectQueueIndex && nextQueueTargetIdx >= 0) {
+                    onSelectQueueIndex(nextQueueTargetIdx);
+                  } else if (nextManga && onSelectManga) {
+                    onSelectManga(nextManga);
+                  }
+                }}
                 className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-amber-400 px-3 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-300"
               >
-                <span>次の巻へ</span>
+                <span>{nextQueueItem ? "次へ" : "次の巻へ"}</span>
                 <SkipForward className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
         )}
+
+      {/* Queue Picker Modal */}
+      {queuePickerOpen && queue.length > 0 && onSelectQueueIndex && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md"
+          onClick={() => setQueuePickerOpen(false)}
+        >
+          <div
+            className="flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/15 bg-zinc-950/95 shadow-2xl backdrop-blur-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <ListMusic className="h-4 w-4 text-indigo-300" />
+                <h3 className="text-sm font-bold text-white">
+                  再生キュー（{queue.length} 件）
+                </h3>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {onClearQueue && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearQueue();
+                      setQueuePickerOpen(false);
+                    }}
+                    className="rounded-lg border border-zinc-800 px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                  >
+                    空にする
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setQueuePickerOpen(false)}
+                  className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-zinc-300 hover:bg-white/20 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 space-y-1.5 overflow-y-auto p-3">
+              {queue.map((item, idx) => {
+                const isCurrent = item.id === manga.id;
+                return (
+                  <div
+                    key={`${item.id}-${idx}`}
+                    className={`flex items-center gap-2.5 rounded-xl border p-2 transition ${
+                      isCurrent
+                        ? "border-indigo-400/70 bg-indigo-500/15"
+                        : "border-white/5 bg-white/[0.03] hover:border-indigo-400/40 hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectQueueIndex(idx);
+                        setQueuePickerOpen(false);
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <PickerThumb
+                        item={item}
+                        accessToken={accessToken}
+                        masterKey={masterKey}
+                        thumbVersion={thumbVersions[item.id] ?? 0}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                            {idx + 1}
+                          </span>
+                          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                            {item.kind === "manga" ? "漫画" : "動画"}
+                          </span>
+                          {isCurrent && (
+                            <span className="rounded bg-indigo-400/20 px-1.5 py-0.5 text-[10px] font-bold text-indigo-300">
+                              現在
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-white">
+                          {item.title}
+                        </p>
+                      </div>
+                    </button>
+                    {onRemoveFromQueue && (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveFromQueue(idx)}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+                        title="キューから削除"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Series Volume Picker Modal */}
       {seriesPickerOpen && seriesManga.length > 1 && onSelectManga && (

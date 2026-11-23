@@ -422,24 +422,22 @@ function VideoListRow({
 
         {!selectionMode && (
           <div className="flex items-center gap-1.5">
-            {video.kind !== "manga" && (
-              <button
-                type="button"
-                onClick={() => onAddToQueue(video)}
-                className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
-                  isInQueue
-                    ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
-                    : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100"
-                }`}
-                title={isInQueue ? "キューに追加済み" : "再生キューに追加"}
-              >
-                {isInQueue ? (
-                  <ListChecks className="h-3.5 w-3.5" />
-                ) : (
-                  <ListPlus className="h-3.5 w-3.5" />
-                )}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => onAddToQueue(video)}
+              className={`flex h-8 w-8 items-center justify-center rounded-lg border transition ${
+                isInQueue
+                  ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                  : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100"
+              }`}
+              title={isInQueue ? "キューに追加済み" : "再生キューに追加"}
+            >
+              {isInQueue ? (
+                <ListChecks className="h-3.5 w-3.5" />
+              ) : (
+                <ListPlus className="h-3.5 w-3.5" />
+              )}
+            </button>
             <button
               type="button"
               onClick={() => onToggleFavorite(video.id)}

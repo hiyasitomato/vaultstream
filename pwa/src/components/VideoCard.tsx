@@ -765,47 +765,30 @@ function VideoCard({
         {/* Always-visible Queue (video) / Read (manga) & Favorite action row */}
         {!selectionMode && (
           <div className="mt-2 flex items-center gap-1.5 pt-0.5">
-            {isManga ? (
-              <button
-                type="button"
-                onPointerDown={() => {
-                  prewarmVideoForInstantPlay(video, accessToken, masterKey, getResumeSec(), "high");
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelect(video);
-                }}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/25"
-              >
-                <BookOpen className="h-3.5 w-3.5" />
-                <span>漫画を読む ({pageCount}P)</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAddToQueue(video);
-                }}
-                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
-                  isInQueue
-                    ? "border-indigo-500/50 bg-indigo-500/20 text-indigo-200"
-                    : "border-zinc-800 bg-zinc-900/90 text-zinc-200 hover:border-indigo-500/50 hover:bg-indigo-500/15 hover:text-indigo-200"
-                }`}
-              >
-                {isInQueue ? (
-                  <>
-                    <ListChecks className="h-3.5 w-3.5" />
-                    <span>キュー追加済み</span>
-                  </>
-                ) : (
-                  <>
-                    <ListPlus className="h-3.5 w-3.5" />
-                    <span>キューに追加</span>
-                  </>
-                )}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddToQueue(video);
+              }}
+              className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
+                isInQueue
+                  ? "border-indigo-500/50 bg-indigo-500/20 text-indigo-200"
+                  : "border-zinc-800 bg-zinc-900/90 text-zinc-200 hover:border-indigo-500/50 hover:bg-indigo-500/15 hover:text-indigo-200"
+              }`}
+            >
+              {isInQueue ? (
+                <>
+                  <ListChecks className="h-3.5 w-3.5" />
+                  <span>キュー追加済み</span>
+                </>
+              ) : (
+                <>
+                  <ListPlus className="h-3.5 w-3.5" />
+                  <span>キューに追加</span>
+                </>
+              )}
+            </button>
             <button
               type="button"
               onClick={(e) => {
