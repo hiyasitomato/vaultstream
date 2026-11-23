@@ -248,10 +248,13 @@ export async function putCachedThumbBytes(
   const db = await openDb();
   if (!db) return;
 
-  const copy = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  ) as ArrayBuffer;
+  const copy =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer);
   const now = Date.now();
 
   return new Promise((resolve) => {
@@ -307,10 +310,13 @@ export async function putCachedPlaylistBytes(
   const db = await openDb();
   if (!db) return;
 
-  const copy = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  ) as ArrayBuffer;
+  const copy =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer);
 
   return new Promise((resolve) => {
     try {
@@ -359,7 +365,7 @@ export async function getCachedSegmentBytes(url: string): Promise<ArrayBuffer | 
           resolve(null);
           return;
         }
-        resolve(rec.bytes.slice(0));
+        resolve(rec.bytes);
       };
       req.onerror = () => resolve(null);
     } catch {

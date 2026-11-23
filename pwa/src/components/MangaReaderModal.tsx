@@ -35,6 +35,7 @@ import {
   formatDuration,
   getSyncCachedThumbnailUrl,
   hasMangaPageCached,
+  prewarmVideoForInstantPlay,
   updateThumbnailInDrive,
 } from "@/lib/drive";
 import { saveVideoProgress } from "@/lib/storage";
@@ -292,11 +293,19 @@ export default function MangaReaderModal({
   const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const [videoPickerQuery, setVideoPickerQuery] = useState("");
   const [minimized, setMinimized] = useState(false);
+  const [dragOffsetY, setDragOffsetY] = useState(0);
+  const pullGestureRef = useRef<{
+    x: number;
+    y: number;
+    t: number;
+    axis: "x" | "y" | null;
+  } | null>(null);
   const [seriesPickerOpen, setSeriesPickerOpen] = useState(false);
   const [queuePickerOpen, setQueuePickerOpen] = useState(false);
 
   useEffect(() => {
     setMinimized(false);
+    setDragOffsetY(0);
     setSeriesPickerOpen(false);
     setQueuePickerOpen(false);
   }, [manga.id]);
@@ -338,6 +347,13 @@ export default function MangaReaderModal({
       : null;
   const prevManga =
     currentSeriesIdx > 0 ? seriesManga[currentSeriesIdx - 1] : null;
+
+  // Prewarm next volume / next queue item in background when nearing the end of the current manga
+  useEffect(() => {
+    const target = nextQueueItem ?? nextManga;
+    if (!target || totalPages === 0 || pageIdx < Math.max(0, totalPages - 5)) return;
+    prewarmVideoForInstantPlay(target, accessToken, masterKey, 0, "low");
+  }, [nextQueueItem, nextManga, totalPages, pageIdx, accessToken, masterKey]);
 
   const pickableVideos = useMemo(() => {
     const q = videoPickerQuery.trim().toLowerCase();
@@ -869,13 +885,104 @@ export default function MangaReaderModal({
     );
   }
 
+  const handlePullTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (splitWithVideo || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      pullGestureRef.current = {
+        x: t.clientX,
+        y: t.clientY,
+        t: performance.now(),
+        axis: null,
+      };
+    },
+    [splitWithVideo]
+  );
+
+  const handlePullTouchMove = useCallback(
+    (e: React.TouchEvent, allowHorizontalFlip: boolean) => {
+      const g = pullGestureRef.current;
+      if (!g || splitWithVideo || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      const dx = t.clientX - g.x;
+      const dy = t.clientY - g.y;
+
+      if (!g.axis) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        if (dy > 10 && Math.abs(dy) > Math.abs(dx) * 1.15) {
+          g.axis = "y";
+        } else if (allowHorizontalFlip && Math.abs(dx) >= Math.abs(dy)) {
+          g.axis = "x";
+        } else {
+          pullGestureRef.current = null;
+          return;
+        }
+      }
+
+      if (g.axis === "y") {
+        setDragOffsetY(Math.max(0, dy));
+      }
+    },
+    [splitWithVideo]
+  );
+
+  const handlePullTouchEnd = useCallback(
+    (e: React.TouchEvent, allowHorizontalFlip: boolean) => {
+      const g = pullGestureRef.current;
+      pullGestureRef.current = null;
+      if (!g) return;
+      const t = e.changedTouches[0];
+      const dx = (t?.clientX ?? g.x) - g.x;
+      const dy = (t?.clientY ?? g.y) - g.y;
+      const dt = Math.max(1, performance.now() - g.t);
+      const vy = dy / dt;
+
+      if (g.axis === "y") {
+        setDragOffsetY(0);
+        if (dy > 95 || (dy > 45 && vy > 0.45)) {
+          setMinimized(true);
+        }
+        return;
+      }
+
+      if (allowHorizontalFlip && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 0) {
+          if (readingMode === "rtl") goNext();
+          else goPrev();
+        } else {
+          if (readingMode === "rtl") goPrev();
+          else goNext();
+        }
+      }
+    },
+    [readingMode, goNext, goPrev]
+  );
+
   return (
     <div
       className={`${containerPositionClass} ios-no-callout`}
+      style={{
+        transform:
+          dragOffsetY > 0
+            ? `translate3d(0, ${dragOffsetY}px, 0) scale(${1 - Math.min(0.12, dragOffsetY / 1600)})`
+            : "translate3d(0, 0, 0) scale(1)",
+        borderRadius: dragOffsetY > 0 ? "24px" : "0px",
+        opacity: dragOffsetY > 0 ? Math.max(0.55, 1 - dragOffsetY / 700) : 1,
+        transition:
+          dragOffsetY > 0
+            ? "none"
+            : "transform 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease, border-radius 200ms ease",
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={manga.title}
     >
+      {/* Smooth Pull-Down-to-Minimize Floating Pill */}
+      {dragOffsetY > 24 && (
+        <div className="pointer-events-none absolute left-1/2 top-5 z-40 -translate-x-1/2 rounded-full border border-white/20 bg-black/85 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xl">
+          {dragOffsetY > 95 ? "↓ 離すとミニ窓でホームへ" : "↓ 下に引いてホームへ"}
+        </div>
+      )}
       {/* Auto-Slide Countdown Progress Hairline (GPU compositor animation) */}
       {autoSlide && readingMode !== "vertical" && (
         <div className="pointer-events-none absolute left-0 right-0 top-0 z-30 h-1 bg-zinc-900">
@@ -893,6 +1000,9 @@ export default function MangaReaderModal({
 
       {/* Top HUD Header (Apple Liquid Glass) */}
       <header
+        onTouchStart={handlePullTouchStart}
+        onTouchMove={(e) => handlePullTouchMove(e, false)}
+        onTouchEnd={(e) => handlePullTouchEnd(e, false)}
         className={`z-20 flex shrink-0 items-center justify-between gap-2 border-b border-white/15 bg-black/45 px-3 shadow-[inset_0_-1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl transition-opacity duration-200 sm:px-4 ${
           hudVisible
             ? "pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] opacity-100"
@@ -1243,23 +1353,12 @@ export default function MangaReaderModal({
         <div
           className="relative flex min-h-0 min-w-0 flex-1 cursor-pointer select-none items-center justify-center overflow-hidden bg-[#060609] p-0"
           onClick={(e) => handleTapZone(e.clientX, e.currentTarget.getBoundingClientRect())}
-          onTouchStart={(e) => {
-            touchStartXRef.current = e.touches[0]?.clientX ?? null;
-          }}
-          onTouchEnd={(e) => {
-            if (touchStartXRef.current === null) return;
-            const endX = e.changedTouches[0]?.clientX ?? touchStartXRef.current;
-            const dx = endX - touchStartXRef.current;
-            touchStartXRef.current = null;
-            if (Math.abs(dx) > 45) {
-              if (dx > 0) {
-                if (readingMode === "rtl") goNext();
-                else goPrev();
-              } else {
-                if (readingMode === "rtl") goPrev();
-                else goNext();
-              }
-            }
+          onTouchStart={handlePullTouchStart}
+          onTouchMove={(e) => handlePullTouchMove(e, true)}
+          onTouchEnd={(e) => handlePullTouchEnd(e, true)}
+          onTouchCancel={() => {
+            pullGestureRef.current = null;
+            setDragOffsetY(0);
           }}
         >
           {/* Apple Liquid Glass Ambient Backdrop for Empty Margins */}

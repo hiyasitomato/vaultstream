@@ -305,7 +305,7 @@ export function clearThumbnailCache(clearDisk = false): void {
 }
 
 // Dedicated high-speed LRU + IndexedDB cache for decrypted manga pages (zero-latency page turns & auto-slide!)
-const MAX_MANGA_PAGE_CACHE = 300;
+const MAX_MANGA_PAGE_CACHE = 600;
 const mangaPageCache = new Map<string, Promise<string>>();
 const mangaDecodedSet = new Set<string>();
 
@@ -324,7 +324,7 @@ export function hasMangaPageCached(fileId: string, encrypted = false): boolean {
 
 // Separate dedicated concurrency limiter for manga pages so home-screen thumbnails never block manga loading!
 let activeMangaFetches = 0;
-const MAX_CONCURRENT_MANGA_FETCHES = 8;
+const MAX_CONCURRENT_MANGA_FETCHES = 10;
 const mangaFetchHighWaiters: Array<() => void> = [];
 const mangaFetchLowWaiters: Array<() => void> = [];
 
