@@ -317,6 +317,16 @@ export default function MangaReaderModal({
       : queueIndex >= 0 && queueIndex + 1 < queue.length
         ? queueIndex + 1
         : -1;
+  const prevQueueTargetIdx =
+    currentQueueIdx > 0
+      ? currentQueueIdx - 1
+      : queueIndex > 0 && queueIndex < queue.length
+        ? queueIndex - 1
+        : -1;
+  const prevQueueItem =
+    prevQueueTargetIdx >= 0 && prevQueueTargetIdx < queue.length
+      ? queue[prevQueueTargetIdx]
+      : null;
 
   const currentSeriesIdx = useMemo(
     () => seriesManga.findIndex((m) => m.id === manga.id),
@@ -326,6 +336,8 @@ export default function MangaReaderModal({
     currentSeriesIdx >= 0 && currentSeriesIdx + 1 < seriesManga.length
       ? seriesManga[currentSeriesIdx + 1]
       : null;
+  const prevManga =
+    currentSeriesIdx > 0 ? seriesManga[currentSeriesIdx - 1] : null;
 
   const pickableVideos = useMemo(() => {
     const q = videoPickerQuery.trim().toLowerCase();
@@ -513,17 +525,56 @@ export default function MangaReaderModal({
   }, [manga.id, pages, totalPages, accessToken, manga.encrypted, masterKey, computeStartIdx]);
 
   const goNext = useCallback(() => {
-    setPageIdx((cur) => {
-      if (cur + stepSize < totalPages) return cur + stepSize;
-      if (loopSlide) return 0;
-      setAutoSlide(false);
-      return cur;
-    });
-  }, [stepSize, totalPages, loopSlide]);
+    if (pageIdx + stepSize < totalPages) {
+      setPageIdx(pageIdx + stepSize);
+      return;
+    }
+    if (nextQueueItem && onSelectQueueIndex && nextQueueTargetIdx >= 0) {
+      onSelectQueueIndex(nextQueueTargetIdx);
+      return;
+    }
+    if (nextManga && onSelectManga) {
+      onSelectManga(nextManga);
+      return;
+    }
+    if (loopSlide) {
+      setPageIdx(0);
+      return;
+    }
+    setAutoSlide(false);
+  }, [
+    pageIdx,
+    stepSize,
+    totalPages,
+    loopSlide,
+    nextQueueItem,
+    nextQueueTargetIdx,
+    onSelectQueueIndex,
+    nextManga,
+    onSelectManga,
+  ]);
 
   const goPrev = useCallback(() => {
-    setPageIdx((cur) => Math.max(0, cur - stepSize));
-  }, [stepSize]);
+    if (pageIdx > 0) {
+      setPageIdx(Math.max(0, pageIdx - stepSize));
+      return;
+    }
+    if (prevQueueItem && onSelectQueueIndex && prevQueueTargetIdx >= 0) {
+      onSelectQueueIndex(prevQueueTargetIdx);
+      return;
+    }
+    if (prevManga && onSelectManga) {
+      onSelectManga(prevManga);
+    }
+  }, [
+    pageIdx,
+    stepSize,
+    prevQueueItem,
+    prevQueueTargetIdx,
+    onSelectQueueIndex,
+    prevManga,
+    onSelectManga,
+  ]);
 
   const currentPageReady = Boolean(pageUrls[pageIdx]) && !loadingCurrent;
 
