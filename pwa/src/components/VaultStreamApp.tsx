@@ -4032,11 +4032,7 @@ export default function VaultStreamApp() {
                         <button
                           key={`hg-${tab.id}`}
                           type="button"
-                          onClick={() => {
-                            setHomeGenreGroup(tab.id);
-                            setSelectedGenres([]);
-                            setOnlyUncategorized(false);
-                          }}
+                          onClick={() => setHomeGenreGroup(tab.id)}
                           className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
                             active
                               ? "border-zinc-600 bg-zinc-800 text-white"
