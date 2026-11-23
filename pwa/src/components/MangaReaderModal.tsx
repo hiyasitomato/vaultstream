@@ -38,6 +38,7 @@ import {
   prewarmVideoForInstantPlay,
   updateThumbnailInDrive,
 } from "@/lib/drive";
+import type { RelatedWorkRecommendation } from "@/lib/crossMedia";
 import { saveVideoProgress } from "@/lib/storage";
 import type { PlaybackProgress, VaultVideoItem } from "@/lib/types";
 
@@ -46,6 +47,7 @@ interface MangaReaderModalProps {
   allVideos: VaultVideoItem[];
   linkedVideos?: VaultVideoItem[];
   seriesManga?: VaultVideoItem[];
+  relatedWorks?: RelatedWorkRecommendation[];
   onSelectManga?: (manga: VaultVideoItem) => void;
   queue?: VaultVideoItem[];
   queueIndex?: number;
@@ -237,6 +239,7 @@ export default function MangaReaderModal({
   allVideos,
   linkedVideos = [],
   seriesManga = [],
+  relatedWorks = [],
   onSelectManga,
   queue = [],
   queueIndex = -1,
@@ -1057,19 +1060,23 @@ export default function MangaReaderModal({
               <span className="sm:hidden">{queue.length}</span>
             </button>
           )}
-          {seriesManga.length > 1 && onSelectManga && (
+          {(seriesManga.length > 1 || relatedWorks.length > 0) && onSelectManga && (
             <button
               type="button"
               onClick={() => setSeriesPickerOpen(true)}
               className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/25"
-              title="シリーズの他の巻・話へ移動"
+              title="シリーズ・同じ制作/作者の関連作品"
             >
               <Layers className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">
-                シリーズ ({currentSeriesIdx + 1}/{seriesManga.length})
+                {seriesManga.length > 1
+                  ? `シリーズ (${currentSeriesIdx + 1}/${seriesManga.length})`
+                  : `関連 (${relatedWorks.length})`}
               </span>
               <span className="sm:hidden">
-                {currentSeriesIdx + 1}/{seriesManga.length}
+                {seriesManga.length > 1
+                  ? `${currentSeriesIdx + 1}/${seriesManga.length}`
+                  : `関連${relatedWorks.length}`}
               </span>
             </button>
           )}
@@ -1843,8 +1850,8 @@ export default function MangaReaderModal({
         </div>
       )}
 
-      {/* Series Volume Picker Modal */}
-      {seriesPickerOpen && seriesManga.length > 1 && onSelectManga && (
+      {/* Series & Related Works Picker Modal */}
+      {seriesPickerOpen && (seriesManga.length > 1 || relatedWorks.length > 0) && onSelectManga && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md"
           onClick={() => setSeriesPickerOpen(false)}
@@ -1857,7 +1864,9 @@ export default function MangaReaderModal({
               <div className="flex items-center gap-2">
                 <Layers className="h-4 w-4 text-amber-300" />
                 <h3 className="text-sm font-bold text-white">
-                  シリーズ一覧（全 {seriesManga.length} 巻）
+                  {seriesManga.length > 1
+                    ? `シリーズ（${seriesManga.length}巻）・関連作品`
+                    : `同じ作者・制作・関連作品（${relatedWorks.length}件）`}
                 </h3>
               </div>
               <button
@@ -1869,49 +1878,100 @@ export default function MangaReaderModal({
               </button>
             </div>
             <div className="flex-1 space-y-1.5 overflow-y-auto p-3">
-              {seriesManga.map((vol, idx) => {
-                const isCurrent = vol.id === manga.id;
-                return (
-                  <button
-                    key={vol.id}
-                    type="button"
-                    onClick={() => {
-                      onSelectManga(vol);
-                      setSeriesPickerOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-3 rounded-xl border p-2 text-left transition ${
-                      isCurrent
-                        ? "border-amber-400/70 bg-amber-500/15"
-                        : "border-white/5 bg-white/[0.03] hover:border-amber-400/40 hover:bg-white/[0.08]"
-                    }`}
-                  >
-                    <PickerThumb
-                      item={vol}
-                      accessToken={accessToken}
-                      masterKey={masterKey}
-                      thumbVersion={thumbVersions[vol.id] ?? 0}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
-                          #{idx + 1}
-                        </span>
-                        {isCurrent && (
-                          <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
-                            読書中
+              {seriesManga.length > 1 &&
+                seriesManga.map((vol, idx) => {
+                  const isCurrent = vol.id === manga.id;
+                  return (
+                    <button
+                      key={vol.id}
+                      type="button"
+                      onClick={() => {
+                        onSelectManga(vol);
+                        setSeriesPickerOpen(false);
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-xl border p-2 text-left transition ${
+                        isCurrent
+                          ? "border-amber-400/70 bg-amber-500/15"
+                          : "border-white/5 bg-white/[0.03] hover:border-amber-400/40 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      <PickerThumb
+                        item={vol}
+                        accessToken={accessToken}
+                        masterKey={masterKey}
+                        thumbVersion={thumbVersions[vol.id] ?? 0}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                            #{idx + 1}
                           </span>
-                        )}
+                          {isCurrent && (
+                            <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+                              読書中
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-white">
+                          {vol.title}
+                        </p>
+                        {vol.pageCount ? (
+                          <p className="font-mono text-[10px] text-zinc-400">{vol.pageCount} ページ</p>
+                        ) : null}
                       </div>
-                      <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-white">
-                        {vol.title}
-                      </p>
-                      {vol.pageCount ? (
-                        <p className="font-mono text-[10px] text-zinc-400">{vol.pageCount} ページ</p>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
+                    </button>
+                  );
+                })}
+
+              {relatedWorks.length > 0 && (
+                <div className={seriesManga.length > 1 ? "pt-3" : ""}>
+                  <p className="mb-1.5 px-1 text-[11px] font-bold text-sky-300">
+                    同じ制作会社・作者・関連作品
+                  </p>
+                  <div className="space-y-1.5">
+                    {relatedWorks.map(({ item, sharedCredits }) => (
+                      <button
+                        key={`rel-${item.id}`}
+                        type="button"
+                        onClick={() => {
+                          if (item.kind === "manga") {
+                            onSelectManga(item);
+                          } else {
+                            onSelectVideo(item);
+                          }
+                          setSeriesPickerOpen(false);
+                        }}
+                        className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-2 text-left transition hover:border-sky-400/40 hover:bg-white/[0.08]"
+                      >
+                        <PickerThumb
+                          item={item}
+                          accessToken={accessToken}
+                          masterKey={masterKey}
+                          thumbVersion={thumbVersions[item.id] ?? 0}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                              {item.kind === "manga" ? "漫画" : "動画"}
+                            </span>
+                            {sharedCredits.slice(0, 2).map((c) => (
+                              <span
+                                key={c}
+                                className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200"
+                              >
+                                {c}
+                              </span>
+                            ))}
+                          </div>
+                          <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-white">
+                            {item.title}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -167,16 +167,55 @@ function quickStableHash(str: string): number {
   return h >>> 0;
 }
 
+export interface RelatedWorkRecommendation {
+  item: VaultVideoItem;
+  sharedCredits: string[];
+}
+
+function scoreRelatedCandidate(
+  activeItem: VaultVideoItem,
+  cand: VaultVideoItem,
+  activeCategories: Set<string>,
+  activeContentGenres: Set<string>,
+  candGenres: string[]
+): { score: number; sharedCredits: string[] } {
+  let score = 0;
+  const sharedCredits: string[] = [];
+
+  if (candGenres.some((g) => activeCategories.has(g))) {
+    score += 10;
+  }
+
+  for (const g of getContentGenresOnly(candGenres)) {
+    if (!activeContentGenres.has(g)) continue;
+    if (g.startsWith("作者:")) {
+      score += 45;
+      sharedCredits.push(g);
+    } else if (g.startsWith("原作:")) {
+      score += 35;
+      sharedCredits.push(g);
+    } else if (g.startsWith("制作:")) {
+      score += 30;
+      sharedCredits.push(g);
+    } else {
+      score += 5;
+    }
+  }
+
+  const tie = (quickStableHash(`${activeItem.id}:${cand.id}`) % 1000) / 10000;
+  return { score: score + tie, sharedCredits };
+}
+
 export function findSeriesAndRelatedVideos(
   activeVideo: VaultVideoItem,
   allVideos: VaultVideoItem[],
   videoGenresMap: Record<string, string[]>,
-  relatedLimit = 6
+  relatedLimit = 8
 ): SeriesAndRelatedResult {
-  const candidates = allVideos.filter(
+  const videoCandidates = allVideos.filter(
     (v) => v.id !== activeVideo.id && v.kind !== "manga"
   );
-  if (candidates.length === 0) {
+  if (allVideos.length <= 1) {
     return { seriesVideos: [], relatedVideos: [] };
   }
 
@@ -186,7 +225,7 @@ export function findSeriesAndRelatedVideos(
   const seriesMatches: VaultVideoItem[] = [];
   const seriesIdSet = new Set<string>();
 
-  for (const cand of candidates) {
+  for (const cand of videoCandidates) {
     const normCand = normalizeCrossMediaTitle(cand.title);
     const badgeCand = extractSeriesBadge(cand.title);
     const sameBadge = Boolean(
@@ -208,35 +247,27 @@ export function findSeriesAndRelatedVideos(
 
   seriesMatches.sort((a, b) => naturalTitleCompare(a.title, b.title));
 
-  // Rank related videos by same category + content genre overlap
+  // Rank related videos + cross-media works sharing studio / brand / creator
   const activeAllGenres = videoGenresMap[activeVideo.id] ?? [];
   const activeCategories = new Set(activeAllGenres.filter((g) => CATEGORY_TAG_SET.has(g)));
   const activeContentGenres = new Set(getContentGenresOnly(activeAllGenres));
 
-  const scoredRelated = candidates
-    .filter((v) => !seriesIdSet.has(v.id))
+  const scoredRelated = allVideos
+    .filter((v) => v.id !== activeVideo.id && !seriesIdSet.has(v.id))
     .map((v) => {
       const gAll = videoGenresMap[v.id] ?? [];
-      let score = 0;
-
-      // Strongly prefer same top-level category (アニメ vs 現実)
-      const sameCategory = gAll.some((g) => activeCategories.has(g));
-      if (sameCategory) score += 10;
-
-      // Reward shared content genres
-      const contentG = getContentGenresOnly(gAll);
-      let genreOverlap = 0;
-      for (const g of contentG) {
-        if (activeContentGenres.has(g)) {
-          genreOverlap += 1;
-        }
-      }
-      score += genreOverlap * 5;
-
-      // Small deterministic tie-breaker varied per activeVideo.id so recommendations stay varied
-      const tie = (quickStableHash(`${activeVideo.id}:${v.id}`) % 1000) / 10000;
-      return { video: v, score: score + tie };
+      const { score, sharedCredits } = scoreRelatedCandidate(
+        activeVideo,
+        v,
+        activeCategories,
+        activeContentGenres,
+        gAll
+      );
+      // Include manga in video recommendations when they share studio/brand/creator
+      const allowed = v.kind !== "manga" || sharedCredits.length > 0;
+      return { video: v, score, allowed };
     })
+    .filter((entry) => entry.allowed)
     .sort((a, b) => b.score - a.score)
     .slice(0, relatedLimit)
     .map((entry) => entry.video);
@@ -245,6 +276,36 @@ export function findSeriesAndRelatedVideos(
     seriesVideos: seriesMatches,
     relatedVideos: scoredRelated,
   };
+}
+
+export function findRelatedWorks(
+  activeItem: VaultVideoItem,
+  allVideos: VaultVideoItem[],
+  videoGenresMap: Record<string, string[]>,
+  limit = 8,
+  excludeIds?: Set<string>
+): RelatedWorkRecommendation[] {
+  const activeAllGenres = videoGenresMap[activeItem.id] ?? [];
+  const activeCategories = new Set(activeAllGenres.filter((g) => CATEGORY_TAG_SET.has(g)));
+  const activeContentGenres = new Set(getContentGenresOnly(activeAllGenres));
+
+  return allVideos
+    .filter((v) => v.id !== activeItem.id && !excludeIds?.has(v.id))
+    .map((v) => {
+      const gAll = videoGenresMap[v.id] ?? [];
+      const { score, sharedCredits } = scoreRelatedCandidate(
+        activeItem,
+        v,
+        activeCategories,
+        activeContentGenres,
+        gAll
+      );
+      return { item: v, sharedCredits, score };
+    })
+    .filter((entry) => entry.score >= 5)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ item, sharedCredits }) => ({ item, sharedCredits }));
 }
 
 export function findSeriesManga(

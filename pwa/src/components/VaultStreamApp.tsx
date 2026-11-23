@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 import {
   buildCrossMediaIndex,
+  findRelatedWorks,
   findSeriesAndRelatedVideos,
   findSeriesManga,
   normalizeCrossMediaTitle,
@@ -2879,6 +2880,12 @@ export default function VaultStreamApp() {
     return findSeriesManga(activeManga, videos);
   }, [activeManga, videos]);
 
+  const relatedMangaWorks = useMemo(() => {
+    if (!activeManga) return [];
+    const exclude = new Set(seriesManga.map((m) => m.id));
+    return findRelatedWorks(activeManga, videos, videoGenresMap, 10, exclude);
+  }, [activeManga, videos, videoGenresMap, seriesManga]);
+
   const effectiveViewMode: ViewMode = navSection === "files" ? "list" : viewMode;
 
   const navItems: Array<{
@@ -5174,6 +5181,7 @@ export default function VaultStreamApp() {
           allVideos={videos}
           linkedVideos={crossMedia.linkedById[activeManga.id] ?? []}
           seriesManga={seriesManga}
+          relatedWorks={relatedMangaWorks}
           onSelectManga={(m) => setActiveManga(m)}
           queue={queue}
           queueIndex={queueIndex}
