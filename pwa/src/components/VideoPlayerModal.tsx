@@ -3852,11 +3852,11 @@ export default function VideoPlayerModal({
             )}
           </div>
 
-          {/* RIGHT SIDEBAR (YouTube Watch-Page Queue + Up Next) */}
+          {/* RIGHT SIDEBAR (Independent Scroll: Top = Queue Box, Bottom = Series -> Recommendations) */}
           {!isMiniMode && (
-            <aside className="flex w-full shrink-0 flex-col gap-5 lg:h-full lg:w-[360px] lg:overflow-y-auto lg:pr-1 xl:w-[400px]">
-              {/* Queue Box */}
-              <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950">
+            <aside className="flex w-full shrink-0 flex-col gap-4 lg:h-full lg:w-[360px] lg:overflow-hidden xl:w-[400px]">
+              {/* Queue Box (Independent Scroll Container) */}
+              <div className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 lg:max-h-[42%] lg:shrink-0">
                 <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/60 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <ListMusic className="h-4 w-4 text-rose-400" />
@@ -3887,7 +3887,7 @@ export default function VideoPlayerModal({
                   )}
                 </div>
 
-                <div className="max-h-[340px] space-y-1.5 overflow-y-auto overscroll-contain p-2.5">
+                <div className="max-h-[340px] min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-2.5 lg:max-h-none">
                   {queue.map((item, idx) => {
                     const isCurrent = idx === queueIndex;
                     return (
@@ -4016,7 +4016,9 @@ export default function VideoPlayerModal({
                 </div>
               </div>
 
-              {/* Series First (when available), otherwise Related Videos (YouTube Right Column) */}
+              {/* Below-Queue Independent Scroll: Series Continuation FIRST, then Related Recommendations */}
+              {(seriesVideos.length > 0 || relatedVideos.length > 0) && (
+                <div className="space-y-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
               {seriesVideos.length > 0 && (
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-2 px-1">
@@ -4146,11 +4148,11 @@ export default function VideoPlayerModal({
                 </div>
               )}
 
-              {/* Related Videos ONLY when no series exists (Series takes exclusive priority in recommendation column!) */}
-              {seriesVideos.length === 0 && relatedVideos.length > 0 && (
+              {/* Related Recommendations right after Series */}
+              {relatedVideos.length > 0 && (
                 <div className="space-y-2.5">
                   <h3 className="px-1 text-xs font-bold uppercase tracking-wider text-zinc-400">
-                    関連するおすすめ
+                    次のおすすめ（関連動画）
                   </h3>
                   <div className="space-y-2">
                     {relatedVideos.map((rel) => {
@@ -4255,6 +4257,8 @@ export default function VideoPlayerModal({
                       }
                     )}
                   </div>
+                </div>
+              )}
                 </div>
               )}
             </aside>

@@ -2872,8 +2872,15 @@ export default function VaultStreamApp() {
 
   const { seriesVideos, relatedVideos } = useMemo(() => {
     if (!activeVideo) return { seriesVideos: [], relatedVideos: [] };
-    return findSeriesAndRelatedVideos(activeVideo, videos, videoGenresMap, 6);
-  }, [activeVideo, videos, videoGenresMap]);
+    return findSeriesAndRelatedVideos(
+      activeVideo,
+      videos,
+      videoGenresMap,
+      12,
+      progressMap,
+      userMetaMap
+    );
+  }, [activeVideo, videos, videoGenresMap, progressMap, userMetaMap]);
 
   const seriesManga = useMemo(() => {
     if (!activeManga) return [];

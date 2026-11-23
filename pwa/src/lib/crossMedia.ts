@@ -210,7 +210,9 @@ export function findSeriesAndRelatedVideos(
   activeVideo: VaultVideoItem,
   allVideos: VaultVideoItem[],
   videoGenresMap: Record<string, string[]>,
-  relatedLimit = 8
+  relatedLimit = 12,
+  progressMap?: Record<string, { currentTime: number; duration: number; updatedAt: number }>,
+  userMetaMap?: Record<string, { favorite?: boolean }>
 ): SeriesAndRelatedResult {
   const videoCandidates = allVideos.filter(
     (v) => v.id !== activeVideo.id && v.kind !== "manga"
@@ -247,25 +249,57 @@ export function findSeriesAndRelatedVideos(
 
   seriesMatches.sort((a, b) => naturalTitleCompare(a.title, b.title));
 
-  // Rank related videos + cross-media works sharing studio / brand / creator
+  // YouTube Watch-Page Up-Next ranking:
+  // Combines studio/brand/creator affinity, multi-tag similarity, unwatched freshness, and favorite affinity.
   const activeAllGenres = videoGenresMap[activeVideo.id] ?? [];
   const activeCategories = new Set(activeAllGenres.filter((g) => CATEGORY_TAG_SET.has(g)));
   const activeContentGenres = new Set(getContentGenresOnly(activeAllGenres));
+
+  // Build user favorite-genre affinity profile (YouTube long-term session affinity)
+  const favGenreAffinity = new Set<string>();
+  if (userMetaMap) {
+    for (const [vidId, meta] of Object.entries(userMetaMap)) {
+      if (meta?.favorite) {
+        for (const g of getContentGenresOnly(videoGenresMap[vidId] ?? [])) {
+          favGenreAffinity.add(g);
+        }
+      }
+    }
+  }
 
   const scoredRelated = allVideos
     .filter((v) => v.id !== activeVideo.id && !seriesIdSet.has(v.id))
     .map((v) => {
       const gAll = videoGenresMap[v.id] ?? [];
-      const { score, sharedCredits } = scoreRelatedCandidate(
+      const { score: baseScore, sharedCredits } = scoreRelatedCandidate(
         activeVideo,
         v,
         activeCategories,
         activeContentGenres,
         gAll
       );
+      let ytScore = baseScore;
+
+      // Favorite-genre long-term affinity boost
+      if (favGenreAffinity.size > 0) {
+        let favHits = 0;
+        for (const g of getContentGenresOnly(gAll)) {
+          if (favGenreAffinity.has(g)) favHits += 1;
+        }
+        ytScore += Math.min(12, favHits * 3);
+      }
+
+      // Freshness / watch-completion adjustment (YouTube avoids already-finished items)
+      const prog = progressMap?.[v.id];
+      if (!prog || prog.currentTime <= 5) {
+        ytScore += 8; // Unwatched discovery boost
+      } else if (prog.duration > 0 && prog.currentTime / prog.duration >= 0.9) {
+        ytScore -= 12; // Already completed
+      }
+
       // Include manga in video recommendations when they share studio/brand/creator
       const allowed = v.kind !== "manga" || sharedCredits.length > 0;
-      return { video: v, score, allowed };
+      return { video: v, score: ytScore, allowed };
     })
     .filter((entry) => entry.allowed)
     .sort((a, b) => b.score - a.score)
