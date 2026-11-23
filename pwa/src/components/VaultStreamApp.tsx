@@ -7,8 +7,6 @@ import {
   BookOpen,
   Check,
   CheckSquare,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   Cloud,
   CloudOff,
@@ -250,123 +248,87 @@ function seededOrderHash(id: string, seed: number): number {
 function HorizontalShelf({
   children,
   className = "gap-4 pb-2",
+  wrap = false,
 }: {
   children: React.ReactNode;
   className?: string;
+  wrap?: boolean;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
-  const dragStateRef = useRef<{
-    active: boolean;
-    startX: number;
-    startScrollLeft: number;
-    moved: boolean;
-  }>({ active: false, startX: 0, startScrollLeft: 0, moved: false });
-
-  const updateScrollButtons = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const { scrollLeft, scrollWidth, clientWidth } = el;
-    setCanScrollLeft(scrollLeft > 4);
-    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 4);
-  }, []);
+  const suppressClickRef = useRef(false);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    updateScrollButtons();
-    const ro =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(updateScrollButtons)
-        : null;
-    ro?.observe(el);
-    const timer = setTimeout(updateScrollButtons, 150);
     return () => {
-      ro?.disconnect();
-      clearTimeout(timer);
+      cleanupRef.current?.();
     };
-  }, [children, updateScrollButtons]);
+  }, []);
 
-  const scrollByPage = (dir: -1 | 1) => {
+  if (wrap) {
+    return <div className="flex flex-wrap items-center gap-2 pb-1">{children}</div>;
+  }
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, textarea, select")) return;
     const el = scrollerRef.current;
-    if (!el) return;
-    const step = Math.max(280, Math.round(el.clientWidth * 0.78));
-    el.scrollBy({ left: dir * step, behavior: "smooth" });
+    if (!el || el.scrollWidth <= el.clientWidth + 2) return;
+
+    const startX = e.clientX;
+    const startScrollLeft = el.scrollLeft;
+    let moved = false;
+    const prevUserSelect = document.body.style.userSelect;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      if (!moved && Math.abs(dx) > 4) {
+        moved = true;
+        document.body.style.userSelect = "none";
+      }
+      if (moved) {
+        el.scrollLeft = startScrollLeft - dx;
+      }
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = prevUserSelect;
+      cleanupRef.current = null;
+    };
+
+    const onMouseUp = () => {
+      cleanup();
+      if (moved) {
+        suppressClickRef.current = true;
+        setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 50);
+      }
+    };
+
+    cleanupRef.current?.();
+    cleanupRef.current = cleanup;
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
   };
 
   return (
-    <div className="group/shelf relative">
-      {canScrollLeft && (
-        <button
-          type="button"
-          onClick={() => scrollByPage(-1)}
-          className="absolute left-1 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-700/80 bg-zinc-950/90 text-zinc-100 shadow-lg backdrop-blur-md transition hover:border-zinc-500 hover:bg-zinc-800 md:flex"
-          aria-label="左へスクロール"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </button>
-      )}
-      {canScrollRight && (
-        <button
-          type="button"
-          onClick={() => scrollByPage(1)}
-          className="absolute right-1 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-zinc-700/80 bg-zinc-950/90 text-zinc-100 shadow-lg backdrop-blur-md transition hover:border-zinc-500 hover:bg-zinc-800 md:flex"
-          aria-label="右へスクロール"
-        >
-          <ChevronRight className="h-5 w-5" />
-        </button>
-      )}
-      <div
-        ref={scrollerRef}
-        onScroll={updateScrollButtons}
-        onDragStart={(e) => e.preventDefault()}
-        onMouseDown={(e) => {
-          if (e.button !== 0) return;
-          const el = scrollerRef.current;
-          if (!el) return;
-          dragStateRef.current = {
-            active: true,
-            startX: e.clientX,
-            startScrollLeft: el.scrollLeft,
-            moved: false,
-          };
-        }}
-        onMouseMove={(e) => {
-          const st = dragStateRef.current;
-          if (!st.active) return;
-          const el = scrollerRef.current;
-          if (!el) return;
-          const dx = e.clientX - st.startX;
-          if (Math.abs(dx) > 6) st.moved = true;
-          if (st.moved) {
-            el.scrollLeft = st.startScrollLeft - dx;
-          }
-        }}
-        onMouseUp={() => {
-          const st = dragStateRef.current;
-          st.active = false;
-          if (st.moved) {
-            setTimeout(() => {
-              dragStateRef.current.moved = false;
-            }, 0);
-          }
-        }}
-        onMouseLeave={() => {
-          dragStateRef.current.active = false;
-          dragStateRef.current.moved = false;
-        }}
-        onClickCapture={(e) => {
-          if (dragStateRef.current.moved) {
-            e.preventDefault();
-            e.stopPropagation();
-            dragStateRef.current.moved = false;
-          }
-        }}
-        className={`no-scrollbar flex select-none overflow-x-auto md:cursor-grab md:active:cursor-grabbing ${className}`}
-      >
-        {children}
-      </div>
+    <div
+      ref={scrollerRef}
+      onMouseDown={handleMouseDown}
+      onDragStart={(e) => e.preventDefault()}
+      onClickCapture={(e) => {
+        if (suppressClickRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          suppressClickRef.current = false;
+        }
+      }}
+      className={`no-scrollbar flex select-none overflow-x-auto md:cursor-grab md:active:cursor-grabbing ${className}`}
+    >
+      {children}
     </div>
   );
 }
@@ -4018,7 +3980,7 @@ export default function VaultStreamApp() {
               <div className="mb-5 space-y-2">
                 {/* Compact group switcher + expand/collapse toggle */}
                 <div className="flex items-center justify-between gap-2">
-                  <div className="no-scrollbar flex items-center gap-1 overflow-x-auto pb-0.5">
+                  <HorizontalShelf className="min-w-0 flex-1 items-center gap-1 pb-0.5">
                     {GENRE_GROUP_TABS.filter(
                       (tab) =>
                         tab.id !== "all" &&
@@ -4044,7 +4006,7 @@ export default function VaultStreamApp() {
                         </button>
                       );
                     })}
-                  </div>
+                  </HorizontalShelf>
 
                   <div className="flex shrink-0 items-center gap-1.5">
                     {homeScopedGenres.length > 16 && (
@@ -4089,13 +4051,7 @@ export default function VaultStreamApp() {
                 </div>
 
                 {/* Chips strip (top 16 in horizontal bar when collapsed, full multi-line wrap when expanded) */}
-                <div
-                  className={
-                    homeGenreExpanded
-                      ? "flex flex-wrap items-center gap-2 pb-1"
-                      : "flex items-center gap-2 overflow-x-auto pb-2 [scrollbar-width:none]"
-                  }
-                >
+                <HorizontalShelf wrap={homeGenreExpanded} className="items-center gap-2 pb-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -4154,7 +4110,7 @@ export default function VaultStreamApp() {
                     );
                   })}
 
-                </div>
+                </HorizontalShelf>
               </div>
             )}
 
@@ -4303,7 +4259,7 @@ export default function VaultStreamApp() {
                         </div>
 
                         {!manageGenreSearch.trim() ? (
-                          <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1">
+                          <HorizontalShelf className="items-center gap-1.5 pb-1">
                             {GENRE_GROUP_TABS.map((tab) => {
                               const active = manageGenreGroup === tab.id;
                               const cnt = manageGroupCounts.get(tab.id) ?? 0;
@@ -4323,7 +4279,7 @@ export default function VaultStreamApp() {
                                 </button>
                               );
                             })}
-                          </div>
+                          </HorizontalShelf>
                         ) : (
                           <p className="text-xs text-zinc-400">
                             「{manageGenreSearch.trim()}」に一致するジャンル（{filteredManageGenres.length} 件）
@@ -5029,7 +4985,7 @@ export default function VaultStreamApp() {
           {/* Group tabs + quick search for bulk assignment */}
           <div className="flex flex-wrap items-center gap-1.5 border-t border-zinc-800/80 pt-2 pb-2">
             {!bulkGenreSearch.trim() ? (
-              <div className="no-scrollbar flex flex-1 items-center gap-1 overflow-x-auto">
+              <HorizontalShelf className="min-w-0 flex-1 items-center gap-1">
                 {GENRE_GROUP_TABS.map((tab) => {
                   const active = bulkGenreGroup === tab.id;
                   return (
@@ -5047,7 +5003,7 @@ export default function VaultStreamApp() {
                     </button>
                   );
                 })}
-              </div>
+              </HorizontalShelf>
             ) : (
               <span className="flex-1 text-[11px] text-zinc-400">
                 「{bulkGenreSearch.trim()}」で絞り込み中 ({filteredBulkGenres.length}件)
