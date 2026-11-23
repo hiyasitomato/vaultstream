@@ -6,6 +6,7 @@ import {
   CATEGORY_TAG_SET,
   GENRE_GROUP_TABS,
   type GenreGroupId,
+  getGenreStyle,
   matchesGenreGroup,
   sortGenresForCard,
 } from "@/lib/genres";
@@ -253,7 +254,7 @@ export default function TagEditorModal({
                       className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                         selected
                           ? "border-zinc-300 bg-zinc-100 font-semibold text-zinc-950"
-                          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                          : getGenreStyle(genre, customGenres)
                       }`}
                     >
                       {selected && <Check className="h-3.5 w-3.5" />}

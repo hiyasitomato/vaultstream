@@ -3980,7 +3980,7 @@ export default function VaultStreamApp() {
                         className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                           selected
                             ? "border-zinc-200 bg-zinc-100 font-semibold text-zinc-950"
-                            : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800"
+                            : getGenreStyle(genre, customGenres)
                         }`}
                       >
                         <span>{genre}</span>
