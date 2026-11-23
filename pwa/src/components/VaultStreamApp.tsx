@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { HorizontalShelf } from "./HorizontalShelf";
 import {
   AlertTriangle,
   BookOpen,
@@ -243,94 +244,6 @@ function seededOrderHash(id: string, seed: number): number {
   h = Math.imul(h, 0x85ebca6b) >>> 0;
   h ^= h >>> 13;
   return h >>> 0;
-}
-
-function HorizontalShelf({
-  children,
-  className = "gap-4 pb-2",
-  wrap = false,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  wrap?: boolean;
-}) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const suppressClickRef = useRef(false);
-  const cleanupRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    return () => {
-      cleanupRef.current?.();
-    };
-  }, []);
-
-  if (wrap) {
-    return <div className="flex flex-wrap items-center gap-2 pb-1">{children}</div>;
-  }
-
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement | null;
-    if (target?.closest("input, textarea, select")) return;
-    const el = scrollerRef.current;
-    if (!el || el.scrollWidth <= el.clientWidth + 2) return;
-
-    const startX = e.clientX;
-    const startScrollLeft = el.scrollLeft;
-    let moved = false;
-    const prevUserSelect = document.body.style.userSelect;
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      if (!moved && Math.abs(dx) > 4) {
-        moved = true;
-        document.body.style.userSelect = "none";
-      }
-      if (moved) {
-        el.scrollLeft = startScrollLeft - dx;
-      }
-    };
-
-    const cleanup = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      document.body.style.userSelect = prevUserSelect;
-      cleanupRef.current = null;
-    };
-
-    const onMouseUp = () => {
-      cleanup();
-      if (moved) {
-        suppressClickRef.current = true;
-        setTimeout(() => {
-          suppressClickRef.current = false;
-        }, 50);
-      }
-    };
-
-    cleanupRef.current?.();
-    cleanupRef.current = cleanup;
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
-
-  return (
-    <div
-      ref={scrollerRef}
-      onMouseDown={handleMouseDown}
-      onDragStart={(e) => e.preventDefault()}
-      onClickCapture={(e) => {
-        if (suppressClickRef.current) {
-          e.preventDefault();
-          e.stopPropagation();
-          suppressClickRef.current = false;
-        }
-      }}
-      className={`no-scrollbar flex select-none overflow-x-auto md:cursor-grab md:active:cursor-grabbing ${className}`}
-    >
-      {children}
-    </div>
-  );
 }
 
 const CrossMediaMiniThumb = memo(function CrossMediaMiniThumb({

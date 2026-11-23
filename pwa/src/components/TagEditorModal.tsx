@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, Search, Tag, X } from "lucide-react";
+import { HorizontalShelf } from "./HorizontalShelf";
 import {
   CATEGORY_TAG_SET,
   GENRE_GROUP_TABS,
@@ -210,7 +211,7 @@ export default function TagEditorModal({
             </div>
 
             {!normalizedSearch ? (
-              <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1">
+              <HorizontalShelf className="items-center gap-1.5 pb-1">
                 {GENRE_GROUP_TABS.map((tab) => {
                   const active = activeGroup === tab.id;
                   const count = groupCounts.get(tab.id) ?? 0;
@@ -230,7 +231,7 @@ export default function TagEditorModal({
                     </button>
                   );
                 })}
-              </div>
+              </HorizontalShelf>
             ) : (
               <p className="text-[11px] text-zinc-400">
                 全 {unifiedGenres.length} タグから「{tagSearch.trim()}」を検索中（{visibleGenres.length} 件）

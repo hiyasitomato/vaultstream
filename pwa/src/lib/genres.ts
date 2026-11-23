@@ -58,26 +58,98 @@ const EXPLICIT_COLOR_MAP = new Map<string, string>(
 );
 
 const STUDIO_BLUE_PALETTE = [
-  "bg-sky-950/70 text-sky-200 border-sky-800/70 hover:bg-sky-900/70 hover:border-sky-700",
-  "bg-blue-950/70 text-blue-200 border-blue-800/70 hover:bg-blue-900/70 hover:border-blue-700",
-  "bg-blue-900/50 text-blue-100 border-blue-700/60 hover:bg-blue-900/75 hover:border-blue-600",
-  "bg-cyan-950/70 text-cyan-200 border-cyan-800/70 hover:bg-cyan-900/70 hover:border-cyan-700",
-  "bg-slate-800/80 text-sky-200 border-slate-700 hover:bg-slate-800 hover:border-sky-700/70",
-  "bg-sky-900/45 text-cyan-100 border-sky-700/55 hover:bg-sky-900/70 hover:border-sky-600",
+  "bg-[#0a2540]/85 text-[#7dd3fc] border-[#0369a1]/70 hover:bg-[#0c2d48]",
+  "bg-[#0d2149]/85 text-[#93c5fd] border-[#1d4ed8]/65 hover:bg-[#10295a]",
+  "bg-[#082f49]/85 text-[#bae6fd] border-[#0284c7]/70 hover:bg-[#0c3a59]",
+  "bg-[#083344]/85 text-[#67e8f9] border-[#0891b2]/70 hover:bg-[#0b4257]",
+  "bg-[#112240]/85 text-[#a5f3fc] border-[#2563eb]/60 hover:bg-[#172c52]",
+  "bg-[#0f293a]/85 text-[#38bdf8] border-[#0e7490]/70 hover:bg-[#13344a]",
+  "bg-[#172554]/85 text-[#60a5fa] border-[#3b82f6]/60 hover:bg-[#1e316b]",
+  "bg-[#0c3547]/85 text-[#5eead4] border-[#0f766e]/65 hover:bg-[#10445b]",
+  "bg-[#132a46]/85 text-[#bfdbfe] border-[#1e40af]/70 hover:bg-[#19375c]",
+  "bg-[#092b3b]/85 text-[#22d3ee] border-[#155e75]/75 hover:bg-[#0d394e]",
+  "bg-[#162742]/85 text-[#818cf8] border-[#3730a3]/65 hover:bg-[#1d3458]",
+  "bg-[#0b2736]/85 text-[#99f6e4] border-[#115e59]/70 hover:bg-[#0f3447]",
+  "bg-[#10203a]/85 text-[#7cc4fa] border-[#1d4ed8]/55 hover:bg-[#152b4d]",
+  "bg-[#0a3642]/85 text-[#64dfdf] border-[#0d9488]/65 hover:bg-[#0e4656]",
+  "bg-[#15243b]/85 text-[#90cdf4] border-[#2b6cb0]/70 hover:bg-[#1c304f]",
+  "bg-[#0c2940]/85 text-[#a5b4fc] border-[#2563eb]/55 hover:bg-[#103654]",
 ];
 
 const BRAND_INDIGO_PALETTE = [
-  "bg-indigo-950/70 text-indigo-200 border-indigo-800/70 hover:bg-indigo-900/70 hover:border-indigo-700",
-  "bg-indigo-900/45 text-indigo-100 border-indigo-700/60 hover:bg-indigo-900/70 hover:border-indigo-600",
-  "bg-blue-950/65 text-indigo-200 border-blue-800/65 hover:bg-blue-900/65 hover:border-blue-700",
-  "bg-slate-800/80 text-indigo-200 border-slate-700 hover:bg-slate-800 hover:border-indigo-700/70",
+  "bg-[#1e1b4b]/85 text-[#a5b4fc] border-[#4338ca]/70 hover:bg-[#26225e]",
+  "bg-[#221a4d]/85 text-[#c4b5fd] border-[#5b21b6]/70 hover:bg-[#2b2161]",
+  "bg-[#1a1f4c]/85 text-[#93c5fd] border-[#3730a3]/70 hover:bg-[#222861]",
+  "bg-[#271b4a]/85 text-[#d8b4fe] border-[#6d28d9]/65 hover:bg-[#32235e]",
+  "bg-[#192349]/85 text-[#818cf8] border-[#312e81]/75 hover:bg-[#212e5e]",
+  "bg-[#2a1947]/85 text-[#e9d5ff] border-[#7e22ce]/60 hover:bg-[#36205b]",
+  "bg-[#1d2647]/85 text-[#c7d2fe] border-[#4f46e5]/65 hover:bg-[#25315c]",
+  "bg-[#251f42]/85 text-[#ddd6fe] border-[#6366f1]/60 hover:bg-[#302854]",
+  "bg-[#171d42]/85 text-[#b4c6fc] border-[#3f3cbb]/70 hover:bg-[#1f2757]",
+  "bg-[#2d1a4f]/85 text-[#c084fc] border-[#7c3aed]/65 hover:bg-[#3a2266]",
+  "bg-[#1c213f]/85 text-[#9fa8da] border-[#3949ab]/70 hover:bg-[#252b52]",
+  "bg-[#241845]/85 text-[#b39ddb] border-[#5e35b1]/70 hover:bg-[#2f1f59]",
+  "bg-[#1b244d]/85 text-[#a3bffa] border-[#4c51bf]/70 hover:bg-[#232f63]",
+  "bg-[#2b1d45]/85 text-[#d1c4e9] border-[#673ab7]/65 hover:bg-[#372559]",
 ];
 
 const CREATOR_GOLD_PALETTE = [
-  "bg-amber-950/70 text-amber-200 border-amber-800/70 hover:bg-amber-900/70 hover:border-amber-700",
-  "bg-yellow-950/65 text-yellow-200 border-yellow-800/65 hover:bg-yellow-900/65 hover:border-yellow-700",
-  "bg-orange-950/65 text-amber-200 border-orange-800/65 hover:bg-orange-900/65 hover:border-orange-700",
-  "bg-stone-800/80 text-amber-200 border-stone-700 hover:bg-stone-800 hover:border-amber-700/70",
+  "bg-[#422006]/85 text-[#fcd34d] border-[#b45309]/70 hover:bg-[#542908]",
+  "bg-[#3b2506]/85 text-[#fde047] border-[#a16207]/70 hover:bg-[#4d3008]",
+  "bg-[#431407]/85 text-[#fdba74] border-[#c2410c]/70 hover:bg-[#571a09]",
+  "bg-[#36260b]/85 text-[#fde68a] border-[#92400e]/70 hover:bg-[#47320f]",
+  "bg-[#3d2108]/85 text-[#fbbf24] border-[#d97706]/65 hover:bg-[#4f2b0b]",
+  "bg-[#381d0a]/85 text-[#fed7aa] border-[#9a3412]/70 hover:bg-[#4a260d]",
+  "bg-[#332708]/85 text-[#fef08a] border-[#854d0e]/70 hover:bg-[#42330b]",
+  "bg-[#451a03]/85 text-[#f59e0b] border-[#b45309]/65 hover:bg-[#592204]",
+  "bg-[#35200d]/85 text-[#f6ad55] border-[#9c4221]/70 hover:bg-[#462a11]",
+  "bg-[#2f240a]/85 text-[#facc15] border-[#a16207]/65 hover:bg-[#3e300d]",
+  "bg-[#3f1c06]/85 text-[#fb923c] border-[#c2410c]/65 hover:bg-[#522408]",
+  "bg-[#33210b]/85 text-[#ecc94b] border-[#975a16]/70 hover:bg-[#432c0f]",
+  "bg-[#3a1e09]/85 text-[#fbd38d] border-[#b7791f]/70 hover:bg-[#4c270c]",
+  "bg-[#2d230b]/85 text-[#fefcbf] border-[#744210]/75 hover:bg-[#3c2f0f]",
+];
+
+const GENERAL_GENRE_PALETTE = [
+  "bg-[#4c0519]/85 text-[#fda4af] border-[#be123c]/70 hover:bg-[#610720]",
+  "bg-[#2e1065]/85 text-[#c4b5fd] border-[#6d28d9]/70 hover:bg-[#3b1482]",
+  "bg-[#022c22]/85 text-[#6ee7b7] border-[#047857]/70 hover:bg-[#033b2d]",
+  "bg-[#500724]/85 text-[#f9a8d4] border-[#be185d]/70 hover:bg-[#66092e]",
+  "bg-[#042f2e]/85 text-[#5eead4] border-[#0f766e]/70 hover:bg-[#053d3c]",
+  "bg-[#431407]/85 text-[#fb923c] border-[#ea580c]/65 hover:bg-[#571a09]",
+  "bg-[#450a0a]/85 text-[#fca5a5] border-[#b91c1c]/70 hover:bg-[#590d0d]",
+  "bg-[#3b0764]/85 text-[#d8b4fe] border-[#7e22ce]/70 hover:bg-[#4b0980]",
+  "bg-[#052e16]/85 text-[#86efac] border-[#15803d]/70 hover:bg-[#073d1d]",
+  "bg-[#4a044e]/85 text-[#f0abfc] border-[#a21caf]/70 hover:bg-[#5e0563]",
+  "bg-[#1a2e05]/85 text-[#bef264] border-[#4d7c0f]/70 hover:bg-[#223d07]",
+  "bg-[#460a1e]/85 text-[#fb7185] border-[#e11d48]/65 hover:bg-[#5a0d27]",
+  "bg-[#073634]/85 text-[#2dd4bf] border-[#0d9488]/65 hover:bg-[#094643]",
+  "bg-[#311052]/85 text-[#e9d5ff] border-[#9333ea]/65 hover:bg-[#3f1469]",
+  "bg-[#063327]/85 text-[#34d399] border-[#059669]/65 hover:bg-[#084233]",
+  "bg-[#4a0b28]/85 text-[#f472b6] border-[#db2777]/65 hover:bg-[#5e0e33]",
+  "bg-[#0a363c]/85 text-[#67e8f9] border-[#0e7490]/70 hover:bg-[#0d464e]",
+  "bg-[#3b1a09]/85 text-[#fdba74] border-[#c2410c]/70 hover:bg-[#4d220c]",
+  "bg-[#2a0e4a]/85 text-[#a78bfa] border-[#5b21b6]/75 hover:bg-[#371261]",
+  "bg-[#0a331a]/85 text-[#4ade80] border-[#16a34a]/65 hover:bg-[#0d4222]",
+  "bg-[#440c11]/85 text-[#f87171] border-[#dc2626]/65 hover:bg-[#571016]",
+  "bg-[#3f092d]/85 text-[#f5d0fe] border-[#9d174d]/70 hover:bg-[#520c3a]",
+  "bg-[#223308]/85 text-[#a3e635] border-[#65a30d]/65 hover:bg-[#2c420a]",
+  "bg-[#360b47]/85 text-[#f0abfc] border-[#a21caf]/65 hover:bg-[#460e5c]",
+  "bg-[#082f2b]/85 text-[#99f6e4] border-[#115e59]/75 hover:bg-[#0b3e39]",
+  "bg-[#4c1018]/85 text-[#fecdd3] border-[#9f1239]/70 hover:bg-[#61141f]",
+  "bg-[#26114d]/85 text-[#ddd6fe] border-[#7c3aed]/65 hover:bg-[#321663]",
+  "bg-[#08302b]/85 text-[#a7f3d0] border-[#065f46]/75 hover:bg-[#0b3f38]",
+  "bg-[#470d21]/85 text-[#fbcfe8] border-[#831843]/75 hover:bg-[#5c112b]",
+  "bg-[#361c0a]/85 text-[#fed7aa] border-[#9a3412]/70 hover:bg-[#47250d]",
+  "bg-[#0d3338]/85 text-[#81e6d9] border-[#285e61]/75 hover:bg-[#114248]",
+  "bg-[#420d0d]/85 text-[#fecaca] border-[#991b1b]/70 hover:bg-[#541111]",
+];
+
+const ALL_UNIQUE_FALLBACK_PALETTE = [
+  ...GENERAL_GENRE_PALETTE,
+  ...STUDIO_BLUE_PALETTE,
+  ...BRAND_INDIGO_PALETTE,
+  ...CREATOR_GOLD_PALETTE,
 ];
 
 function hashGenreIndex(name: string, modulo: number): number {
@@ -89,36 +161,101 @@ function hashGenreIndex(name: string, modulo: number): number {
   return (h >>> 0) % Math.max(1, modulo);
 }
 
+function getCategoryPaletteForGenre(genreName: string): string[] {
+  if (genreName.startsWith("制作:")) return STUDIO_BLUE_PALETTE;
+  if (genreName.startsWith("原作:")) return BRAND_INDIGO_PALETTE;
+  if (genreName.startsWith("作者:")) return CREATOR_GOLD_PALETTE;
+  return GENERAL_GENRE_PALETTE;
+}
+
+function pickUnusedStyle(genreName: string, primaryPalette: string[], used: Set<string>): string {
+  const start = hashGenreIndex(genreName, primaryPalette.length);
+  for (let step = 0; step < primaryPalette.length; step += 1) {
+    const candidate = primaryPalette[(start + step) % primaryPalette.length];
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+  }
+  const fallbackStart = hashGenreIndex(genreName, ALL_UNIQUE_FALLBACK_PALETTE.length);
+  for (let step = 0; step < ALL_UNIQUE_FALLBACK_PALETTE.length; step += 1) {
+    const candidate = ALL_UNIQUE_FALLBACK_PALETTE[(fallbackStart + step) % ALL_UNIQUE_FALLBACK_PALETTE.length];
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+  }
+  const fallback = primaryPalette[start];
+  used.add(fallback);
+  return fallback;
+}
+
+const FIXED_SPECIAL_STYLES: Record<string, string> = {
+  "現実": "bg-sky-950/85 text-sky-200 border-sky-700/80 hover:bg-sky-900/80",
+  "アニメ": "bg-violet-950/85 text-violet-200 border-violet-700/80 hover:bg-violet-900/80",
+  "漫画": "bg-amber-950/85 text-amber-200 border-amber-700/80 hover:bg-amber-900/80",
+  "神回・お気に入り": "bg-[#4a2b07]/90 text-[#fde047] border-[#eab308]/75 hover:bg-[#5c3609]",
+};
+
+interface ResolvedPaletteCache {
+  map: Map<string, string>;
+  used: Set<string>;
+}
+
+const customGenresCache = new WeakMap<CustomGenreDef[], ResolvedPaletteCache>();
+const fallbackGlobalMap = new Map<string, string>();
+const fallbackGlobalUsed = new Set<string>(Object.values(FIXED_SPECIAL_STYLES));
+
+function getResolvedPaletteCache(customGenres: CustomGenreDef[]): ResolvedPaletteCache {
+  const cached = customGenresCache.get(customGenres);
+  if (cached) return cached;
+
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  for (const [k, v] of Object.entries(FIXED_SPECIAL_STYLES)) {
+    map.set(k, v);
+    used.add(v);
+  }
+
+  for (const g of customGenres) {
+    if (map.has(g.name)) continue;
+    const explicit = g.color ? EXPLICIT_COLOR_MAP.get(g.color) : undefined;
+    if (explicit && !used.has(explicit)) {
+      map.set(g.name, explicit);
+      used.add(explicit);
+      continue;
+    }
+    const palette = getCategoryPaletteForGenre(g.name);
+    map.set(g.name, pickUnusedStyle(g.name, palette, used));
+  }
+
+  const entry = { map, used };
+  customGenresCache.set(customGenres, entry);
+  return entry;
+}
+
 export function getGenreStyle(
   genreName: string,
   customGenres: CustomGenreDef[] = []
 ): string {
-  const custom = customGenres.find((g) => g.name === genreName);
-  if (custom?.color && EXPLICIT_COLOR_MAP.has(custom.color)) {
-    return EXPLICIT_COLOR_MAP.get(custom.color)!;
+  if (FIXED_SPECIAL_STYLES[genreName]) {
+    return FIXED_SPECIAL_STYLES[genreName];
   }
-  if (genreName === "現実") {
-    return "bg-sky-950/75 text-sky-200 border-sky-800/75 hover:bg-sky-900/75";
+
+  if (customGenres.length > 0) {
+    const cache = getResolvedPaletteCache(customGenres);
+    const existing = cache.map.get(genreName);
+    if (existing) return existing;
+    const assigned = pickUnusedStyle(genreName, getCategoryPaletteForGenre(genreName), cache.used);
+    cache.map.set(genreName, assigned);
+    return assigned;
   }
-  if (genreName === "アニメ") {
-    return "bg-violet-950/75 text-violet-200 border-violet-800/75 hover:bg-violet-900/75";
-  }
-  if (genreName === "漫画") {
-    return "bg-amber-950/75 text-amber-200 border-amber-800/75 hover:bg-amber-900/75";
-  }
-  if (genreName === "神回・お気に入り") {
-    return "bg-amber-950/80 text-amber-200 border-amber-700/70 hover:bg-amber-900/80";
-  }
-  if (genreName.startsWith("制作:")) {
-    return STUDIO_BLUE_PALETTE[hashGenreIndex(genreName, STUDIO_BLUE_PALETTE.length)];
-  }
-  if (genreName.startsWith("原作:")) {
-    return BRAND_INDIGO_PALETTE[hashGenreIndex(genreName, BRAND_INDIGO_PALETTE.length)];
-  }
-  if (genreName.startsWith("作者:")) {
-    return CREATOR_GOLD_PALETTE[hashGenreIndex(genreName, CREATOR_GOLD_PALETTE.length)];
-  }
-  return GENRE_COLOR_OPTIONS[hashGenreIndex(genreName, GENRE_COLOR_OPTIONS.length - 1)].classes;
+
+  const globalExisting = fallbackGlobalMap.get(genreName);
+  if (globalExisting) return globalExisting;
+  const assigned = pickUnusedStyle(genreName, getCategoryPaletteForGenre(genreName), fallbackGlobalUsed);
+  fallbackGlobalMap.set(genreName, assigned);
+  return assigned;
 }
 
 export function extractAutoGenres(
