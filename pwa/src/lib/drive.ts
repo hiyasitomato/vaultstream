@@ -1091,6 +1091,78 @@ async function writeLibraryIndex(
   }
 }
 
+async function trashDriveEntry(id: string, accessToken: string): Promise<void> {
+  const response = await fetch(
+    `${DRIVE_API_BASE}/files/${encodeURIComponent(id)}?supportsAllDrives=true`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ trashed: true }),
+    }
+  );
+  if (response.status === 401) {
+    throw new Error("AUTH_EXPIRED");
+  }
+  if (!response.ok && response.status !== 404) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`削除に失敗しました (${response.status}): ${body.slice(0, 200)}`);
+  }
+}
+
+export async function trashVaultItemsInDrive(
+  rootFolderId: string,
+  items: VaultVideoItem[],
+  accessToken: string,
+  masterKey: CryptoKey | null
+): Promise<void> {
+  if (items.length === 0) return;
+
+  const trashedTargets = new Set<string>();
+  const deletedIds = new Set<string>();
+  const deletedFolderIds = new Set<string>();
+
+  for (const item of items) {
+    deletedIds.add(item.id);
+    if (item.folderId && item.folderId !== rootFolderId) {
+      deletedFolderIds.add(item.folderId);
+      if (!trashedTargets.has(item.folderId)) {
+        trashedTargets.add(item.folderId);
+        await trashDriveEntry(item.folderId, accessToken);
+      }
+    } else {
+      if (item.directFileId && !trashedTargets.has(item.directFileId)) {
+        trashedTargets.add(item.directFileId);
+        await trashDriveEntry(item.directFileId, accessToken);
+      }
+      if (item.thumbnailFileId && !trashedTargets.has(item.thumbnailFileId)) {
+        trashedTargets.add(item.thumbnailFileId);
+        await trashDriveEntry(item.thumbnailFileId, accessToken);
+      }
+    }
+  }
+
+  try {
+    const rootFiles = await listFolderChildren(rootFolderId, accessToken);
+    const indexEntry = rootFiles.find((f) => f.name === LIBRARY_INDEX_FILE_NAME) ?? null;
+    if (indexEntry) {
+      const existingItems = await readLibraryIndex(indexEntry.id, accessToken, masterKey);
+      if (existingItems) {
+        const filtered = existingItems.filter(
+          (entry) => !deletedIds.has(entry.id) && !deletedFolderIds.has(entry.folderId)
+        );
+        if (filtered.length !== existingItems.length) {
+          await writeLibraryIndex(rootFolderId, filtered, accessToken, masterKey, indexEntry.id);
+        }
+      }
+    }
+  } catch {
+    // Best-effort index cleanup
+  }
+}
+
 export async function fetchVaultVideosFast(
   rootFolderId: string,
   rootSnapshot: RootFolderSnapshot,

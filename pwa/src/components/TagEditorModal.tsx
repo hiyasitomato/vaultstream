@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, Plus, Search, Tag, X } from "lucide-react";
+import { Check, Plus, Search, Tag, Trash2, X } from "lucide-react";
 import { HorizontalShelf } from "./HorizontalShelf";
 import {
   CATEGORY_TAG_SET,
@@ -19,6 +19,8 @@ interface TagEditorModalProps {
   customGenres: CustomGenreDef[];
   onToggleGenre: (videoId: string, genre: string) => void;
   onAddCustomGenre: (videoId: string, genre: string, color: string) => void;
+  onDeleteVideo?: (video: VaultVideoItem) => void;
+  deleting?: boolean;
   onClose: () => void;
 }
 
@@ -28,6 +30,8 @@ export default function TagEditorModal({
   customGenres,
   onToggleGenre,
   onAddCustomGenre,
+  onDeleteVideo,
+  deleting = false,
   onClose,
 }: TagEditorModalProps) {
   const [newGenre, setNewGenre] = useState("");
@@ -289,7 +293,20 @@ export default function TagEditorModal({
           </form>
         </div>
 
-        <div className="flex justify-end border-t border-zinc-800 px-5 py-3">
+        <div className="flex items-center justify-between gap-2 border-t border-zinc-800 px-5 py-3">
+          {onDeleteVideo ? (
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => onDeleteVideo(video)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting ? "削除中..." : "この作品を削除"}
+            </button>
+          ) : (
+            <span />
+          )}
           <button
             type="button"
             onClick={onClose}

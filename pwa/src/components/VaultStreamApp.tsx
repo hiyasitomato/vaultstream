@@ -77,6 +77,7 @@ import {
   requestGoogleAccessToken,
   revokeGoogleAccessToken,
   saveSyncedUserDataToDrive,
+  trashVaultItemsInDrive,
 } from "@/lib/drive";
 import {
   CATEGORY_TAG_SET,
@@ -582,6 +583,8 @@ export default function VaultStreamApp() {
       return next;
     });
   }, [videos, selectedVideoIds, showQueueToast]);
+
+  const [deletingItems, setDeletingItems] = useState(false);
 
   const handleRemoveFromQueue = useCallback((indexToRemove: number) => {
     setQueue((prev) => {
@@ -1837,6 +1840,68 @@ export default function VaultStreamApp() {
       setSelectedGenres((prev) => prev.filter((g) => g !== genreName));
     },
     [updateUserData]
+  );
+
+  const handleDeleteVaultItems = useCallback(
+    async (itemsToDelete: VaultVideoItem[]) => {
+      if (itemsToDelete.length === 0 || deletingItems) return;
+      if (!accessToken || !folderId.trim()) {
+        showQueueToast("Googleドライブにログインしてから削除してください");
+        return;
+      }
+      const confirmMsg =
+        itemsToDelete.length === 1
+          ? `「${itemsToDelete[0].title}」をGoogleドライブのゴミ箱へ移動しますか？`
+          : `選択した ${itemsToDelete.length} 件をGoogleドライブのゴミ箱へ移動しますか？`;
+      if (!window.confirm(confirmMsg)) return;
+
+      setDeletingItems(true);
+      try {
+        await trashVaultItemsInDrive(folderId.trim(), itemsToDelete, accessToken, masterKey);
+        const deletedIdSet = new Set(itemsToDelete.map((v) => v.id));
+        setVideos((prev) => prev.filter((v) => !deletedIdSet.has(v.id)));
+        setSelectedVideoIds((prev) => {
+          const next = new Set(prev);
+          for (const id of deletedIdSet) next.delete(id);
+          return next;
+        });
+        updateUserData((prev) => {
+          const nextMeta = { ...prev.videoMeta };
+          for (const id of deletedIdSet) delete nextMeta[id];
+          return {
+            ...prev,
+            videoMeta: nextMeta,
+            updatedAt: Date.now(),
+          };
+        });
+        if (activeVideo && deletedIdSet.has(activeVideo.id)) {
+          handleClosePlayer();
+        }
+        setActiveManga((prev) => (prev && deletedIdSet.has(prev.id) ? null : prev));
+        setEditingTagsVideo((prev) => (prev && deletedIdSet.has(prev.id) ? null : prev));
+        setQueue((prev) => prev.filter((v) => !deletedIdSet.has(v.id)));
+        showQueueToast(`${itemsToDelete.length} 件をGoogleドライブのゴミ箱へ移動しました`);
+      } catch (err) {
+        if (err instanceof Error && err.message === "AUTH_EXPIRED") {
+          handleAuthExpired();
+        } else {
+          showQueueToast(err instanceof Error ? err.message : "削除に失敗しました");
+        }
+      } finally {
+        setDeletingItems(false);
+      }
+    },
+    [
+      accessToken,
+      folderId,
+      masterKey,
+      deletingItems,
+      activeVideo,
+      handleClosePlayer,
+      updateUserData,
+      showQueueToast,
+      handleAuthExpired,
+    ]
   );
 
   const handleToggleVideoGenre = useCallback(
@@ -4882,6 +4947,18 @@ export default function VaultStreamApp() {
                 <ListPlus className="h-3.5 w-3.5 text-zinc-400" />
                 キューに追加
               </button>
+              <button
+                type="button"
+                disabled={selectedVideoIds.size === 0 || deletingItems}
+                onClick={() => {
+                  const picked = videos.filter((v) => selectedVideoIds.has(v.id));
+                  void handleDeleteVaultItems(picked);
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deletingItems ? "削除中..." : `削除 (${selectedVideoIds.size})`}
+              </button>
             </div>
             <button
               type="button"
@@ -5140,6 +5217,8 @@ export default function VaultStreamApp() {
           customGenres={customGenres}
           onToggleGenre={handleToggleVideoGenre}
           onAddCustomGenre={handleAddCustomGenreToVideo}
+          onDeleteVideo={(v) => void handleDeleteVaultItems([v])}
+          deleting={deletingItems}
           onClose={() => setEditingTagsVideo(null)}
         />
       )}
